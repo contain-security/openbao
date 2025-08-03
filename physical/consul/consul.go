@@ -19,9 +19,11 @@ import (
 )
 
 // compile-time interface checks to ensure compile knows available interfaces
-var _ physical.Backend = (*ConsulBackend)(nil)
-var _ physical.HABackend = (*ConsulBackend)(nil)
-var _ physical.Lock = (*ConsulLock)(nil)
+var (
+	_ physical.Backend   = (*ConsulBackend)(nil)
+	_ physical.HABackend = (*ConsulBackend)(nil)
+	_ physical.Lock      = (*ConsulLock)(nil)
+)
 
 type ServiceStatus struct {
 	Initialized bool
@@ -45,7 +47,7 @@ type ConsulBackend struct {
 
 	// HA-specific fields
 	haEnabled bool
-	//advertiseAddr string
+	// advertiseAddr string
 	sessionTTL time.Duration
 	lockDelay  time.Duration
 }
@@ -397,7 +399,7 @@ func NewConsulBackend(conf map[string]string, logger hclog.Logger) (physical.Bac
 		aclEnabled:  aclEnabled,
 		token:       token,
 		haEnabled:   haEnabled,
-		//advertiseAddr: advertiseAddr,
+		// advertiseAddr: advertiseAddr,
 		sessionTTL: sessionTTL,
 		lockDelay:  lockDelay,
 	}
@@ -550,14 +552,14 @@ func (c *ConsulBackend) withRetry(ctx context.Context, operation string, fn func
 		ctx,
 	)
 
-	//var lastErr error
+	// var lastErr error
 	retryCount := 0
 
 	retryableOperation := func() error {
 		err := fn()
 		if err != nil {
 			retryCount++
-			//lastErr = err
+			// lastErr = err
 
 			// Log retry attempt
 			c.logger.Debug("consul operation failed, retrying",
