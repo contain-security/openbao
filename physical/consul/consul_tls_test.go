@@ -1,6 +1,7 @@
 package consul
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/openbao/openbao/sdk/v2/physical"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -864,4 +866,54 @@ func TestConsulBackend_TLS_TLSWithCertDirectory(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to connect to Consul")
 	assert.Nil(t, backend)
+}
+
+func TestConsulBackend_TLS_TLSConnection(t *testing.T) {
+	// Skip if no TLS-enabled Consul available
+	if testing.Short() {
+		t.Skip("Skipping TLS test in short mode")
+	}
+
+	logger := hclog.New(&hclog.LoggerOptions{
+		Name:   "consul-tls-test",
+		Level:  hclog.Debug,
+		Output: os.Stdout,
+	})
+
+	// Test with TLS enabled
+	tlsConfig := map[string]string{
+		"address":         "127.0.0.1:8501", // TLS port
+		"path":            "test/openbao/tls/",
+		"tls_enabled":     "true",
+		"tls_skip_verify": "true", // For testing with self-signed certs
+	}
+
+	backend, err := NewConsulBackend(tlsConfig, logger)
+	if err != nil {
+		t.Skipf("TLS Consul not available: %v", err)
+	}
+
+	// Test basic operation with TLS
+	ctx := context.Background()
+	entry := &physical.Entry{
+		Key:   "tls-test/key1",
+		Value: []byte("tls-test-value"),
+	}
+
+	err = backend.Put(ctx, entry)
+	if err != nil {
+		t.Fatalf("TLS Put failed: %v", err)
+	}
+
+	retrieved, err := backend.Get(ctx, "tls-test/key1")
+	if err != nil {
+		t.Fatalf("TLS Get failed: %v", err)
+	}
+
+	if string(retrieved.Value) != "tls-test-value" {
+		t.Fatalf("TLS value mismatch")
+	}
+
+	// Cleanup
+	backend.Delete(ctx, "tls-test/key1")
 }

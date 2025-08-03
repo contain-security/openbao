@@ -374,3 +374,58 @@ func TestConsulBackend_BASIC_ListPage_Pattern1_SimplePagination(t *testing.T) {
 	// Clean up
 	cleanupListPageData(backend.(*ConsulBackend), ctx, testPrefix, t)
 }
+
+func TestConsulBackend_BASIC_ConfigValidation(t *testing.T) {
+	logger := hclog.NewNullLogger()
+
+	testCases := []struct {
+		name      string
+		config    map[string]string
+		shouldErr bool
+	}{
+		{
+			name: "missing path",
+			config: map[string]string{
+				"address": "127.0.0.1:8500",
+			},
+			shouldErr: true,
+		},
+		{
+			name: "invalid address format",
+			config: map[string]string{
+				"address": "invalid-address",
+				"path":    "test/",
+			},
+			shouldErr: true,
+		},
+		{
+			name: "invalid retry count",
+			config: map[string]string{
+				"address":     "127.0.0.1:8500",
+				"path":        "test/",
+				"max_retries": "invalid",
+			},
+			shouldErr: true,
+		},
+		{
+			name: "valid minimal config",
+			config: map[string]string{
+				"address": "127.0.0.1:8500",
+				"path":    "test/",
+			},
+			shouldErr: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewConsulBackend(tc.config, logger)
+			if tc.shouldErr && err == nil {
+				t.Fatalf("Expected error for config %v", tc.config)
+			}
+			if !tc.shouldErr && err != nil {
+				t.Fatalf("Unexpected error for config %v: %v", tc.config, err)
+			}
+		})
+	}
+}
