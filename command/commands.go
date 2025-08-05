@@ -43,6 +43,7 @@ import (
 	physInmem "github.com/openbao/openbao/sdk/v2/physical/inmem"
 
 	sr "github.com/openbao/openbao/serviceregistration"
+	csr "github.com/openbao/openbao/serviceregistration/consul"
 	ksr "github.com/openbao/openbao/serviceregistration/kubernetes"
 )
 
@@ -157,6 +158,7 @@ var (
 
 	serviceRegistrations = map[string]sr.Factory{
 		"kubernetes": ksr.NewServiceRegistration,
+		"consul":     csr.NewConsulServiceRegistration,
 	}
 
 	initCommandsEnt = func(ui, serverCmdUi cli.Ui, runOpts *RunOptions, commands map[string]cli.CommandFactory) {}
