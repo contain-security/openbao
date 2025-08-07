@@ -695,7 +695,7 @@ func (c *ConsulBackend) Put(ctx context.Context, entry *physical.Entry) error {
 			if ctx.Err() != nil {
 				c.logger.Debug("consul put operation cancelled during execution",
 					"key", entry.Key,
-					"consul_key", consulKey,
+					"consul_key set", (consulKey != nil),
 					"error", ctx.Err())
 				return ctx.Err()
 			}
@@ -705,7 +705,7 @@ func (c *ConsulBackend) Put(ctx context.Context, entry *physical.Entry) error {
 
 		c.logger.Trace("successfully stored key in consul",
 			"key", entry.Key,
-			"consul_key", consulKey,
+			"consul_key set", (consulKey != nil),,
 			"value_size", len(entry.Value))
 
 		return nil
@@ -744,7 +744,7 @@ func (c *ConsulBackend) Get(ctx context.Context, key string) (*physical.Entry, e
 			if ctx.Err() != nil {
 				c.logger.Debug("consul get operation cancelled during execution",
 					"key", key,
-					"consul_key", consulKey,
+					"consul_key set", (consulKey != nil),
 					"error", ctx.Err())
 				return ctx.Err()
 			}
@@ -756,7 +756,7 @@ func (c *ConsulBackend) Get(ctx context.Context, key string) (*physical.Entry, e
 		if pair == nil {
 			c.logger.Trace("key not found in consul",
 				"key", key,
-				"consul_key", consulKey)
+				"consul_key set", (consulKey != nil))
 			result = nil
 			return nil
 		}
@@ -768,7 +768,7 @@ func (c *ConsulBackend) Get(ctx context.Context, key string) (*physical.Entry, e
 
 		c.logger.Trace("successfully retrieved key from consul",
 			"key", key,
-			"consul_key", consulKey,
+			"consul_key set", (consulKey != nil),,
 			"value_size", len(pair.Value))
 
 		return nil
@@ -808,7 +808,7 @@ func (c *ConsulBackend) Delete(ctx context.Context, key string) error {
 			if ctx.Err() != nil {
 				c.logger.Debug("consul delete operation cancelled during execution",
 					"key", key,
-					"consul_key", consulKey,
+					"consul_key set", (consulKey != nil),,
 					"error", ctx.Err())
 				return ctx.Err()
 			}
@@ -818,7 +818,7 @@ func (c *ConsulBackend) Delete(ctx context.Context, key string) error {
 
 		c.logger.Trace("successfully deleted key from consul",
 			"key", key,
-			"consul_key", consulKey)
+			"consul_key set", (consulKey != nil),)
 
 		return nil
 	})
