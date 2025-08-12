@@ -1,3 +1,6 @@
+# NOTE - Experimental fork of OpenBao - adding back in storage support for Consul and service registration for consul
+#   Use at own risk! - at the moment some extra debug logging is enabled - that should not be.  Wait until that logging is patched/removed before use.
+
 # OpenBao
 
 ----
