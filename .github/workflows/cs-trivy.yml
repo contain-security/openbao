@@ -1,0 +1,39 @@
+# contain-security fork: Trivy filesystem scan (vulns, secrets, misconfig).
+# Uploads SARIF to code scanning; non-blocking (alerts triaged in Security tab).
+name: cs-trivy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "51 6 * * 1" # weekly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: cs-trivy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trivy-fs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        if: always()
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-fs
