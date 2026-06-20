@@ -15,6 +15,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-secure-stdlib/parseutil"
 	"github.com/openbao/openbao/sdk/v2/physical"
 )
 
@@ -137,7 +138,7 @@ func validateConfig(conf map[string]string, logger hclog.Logger) error {
 	}
 
 	if delayStr := conf["retry_delay"]; delayStr != "" {
-		if _, err := time.ParseDuration(delayStr); err != nil {
+		if _, err := parseutil.ParseDurationSecond(delayStr); err != nil {
 			return fmt.Errorf("invalid retry_delay value %q: %w", delayStr, err)
 		}
 	}
@@ -239,19 +240,19 @@ func NewConsulBackend(conf map[string]string, logger hclog.Logger) (physical.Bac
 	}
 
 	if initialIntervalStr := conf["retry_initial_interval"]; initialIntervalStr != "" {
-		if initialInterval, err := time.ParseDuration(initialIntervalStr); err == nil {
+		if initialInterval, err := parseutil.ParseDurationSecond(initialIntervalStr); err == nil {
 			retryConfig.InitialInterval = initialInterval
 		}
 	}
 
 	if maxIntervalStr := conf["retry_max_interval"]; maxIntervalStr != "" {
-		if maxInterval, err := time.ParseDuration(maxIntervalStr); err == nil {
+		if maxInterval, err := parseutil.ParseDurationSecond(maxIntervalStr); err == nil {
 			retryConfig.MaxInterval = maxInterval
 		}
 	}
 
 	if maxElapsedTimeStr := conf["retry_max_elapsed_time"]; maxElapsedTimeStr != "" {
-		if maxElapsedTime, err := time.ParseDuration(maxElapsedTimeStr); err == nil {
+		if maxElapsedTime, err := parseutil.ParseDurationSecond(maxElapsedTimeStr); err == nil {
 			retryConfig.MaxElapsedTime = maxElapsedTime
 		}
 	}
@@ -369,7 +370,7 @@ func NewConsulBackend(conf map[string]string, logger hclog.Logger) (physical.Bac
 	// Parse HA timing configuration with validation
 	sessionTTL := 15 * time.Second
 	if ttlStr := conf["session_ttl"]; ttlStr != "" {
-		if parsed, err := time.ParseDuration(ttlStr); err == nil {
+		if parsed, err := parseutil.ParseDurationSecond(ttlStr); err == nil {
 			sessionTTL = validateSessionTTL(parsed)
 			if sessionTTL != parsed {
 				logger.Warn("adjusted session_ttl to meet Consul requirements",
@@ -382,7 +383,7 @@ func NewConsulBackend(conf map[string]string, logger hclog.Logger) (physical.Bac
 
 	lockDelay := 15 * time.Second
 	if delayStr := conf["lock_delay"]; delayStr != "" {
-		if parsed, err := time.ParseDuration(delayStr); err == nil {
+		if parsed, err := parseutil.ParseDurationSecond(delayStr); err == nil {
 			lockDelay = parsed
 		}
 	}
