@@ -1,0 +1,50 @@
+# contain-security fork: build the bao binary and produce signed supply-chain
+# attestations (SLSA-style build provenance + SBOM), via Sigstore/OIDC.
+# Verify later with:  gh attestation verify bin/bao --repo contain-security/openbao
+name: cs-build-attest
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # Sigstore OIDC signing
+  attestations: write # write attestations to the repo
+
+concurrency:
+  group: cs-build-attest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-attest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: .go-version
+      - name: Build bao
+        env:
+          GOTOOLCHAIN: auto
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -o bin/bao .
+          ./bin/bao version
+      - name: Generate CycloneDX SBOM for the binary
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          file: bin/bao
+          format: cyclonedx-json
+          output-file: bin/bao.cdx.json
+          artifact-name: bao-binary-sbom.cdx.json
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: bin/bao
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: bin/bao
+          sbom-path: bin/bao.cdx.json

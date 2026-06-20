@@ -1,0 +1,35 @@
+# contain-security fork: source-tree SBOM generation (SPDX + CycloneDX).
+# Publishes SBOM artifacts for supply-chain transparency.
+name: cs-sbom
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cs-sbom-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: openbao.spdx.json
+          artifact-name: openbao-sbom-spdx.json
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: openbao.cdx.json
+          artifact-name: openbao-sbom-cyclonedx.json

@@ -1,0 +1,34 @@
+# contain-security fork: Go security SAST (gosec).
+# Uploads findings to code scanning; non-blocking (-no-fail) so alerts are
+# triaged under Security > Code scanning rather than breaking the build.
+name: cs-gosec
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "37 6 * * 1" # weekly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: cs-gosec-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gosec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Run gosec
+        uses: securego/gosec@9e6a9843d7a4a6e3e9a8539b02612c8a4aa3f889 # v2.27.1
+        with:
+          args: "-no-fail -fmt sarif -out gosec.sarif ./..."
+      - uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
