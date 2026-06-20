@@ -38,14 +38,12 @@ import (
 	logicalDb "github.com/openbao/openbao/builtin/logical/database"
 	logicalKv "github.com/openbao/openbao/builtin/logical/kv"
 
-	physConsul "github.com/openbao/openbao/physical/consul"
 	physPostgresql "github.com/openbao/openbao/physical/postgresql"
 	physRaft "github.com/openbao/openbao/physical/raft"
 	physFile "github.com/openbao/openbao/sdk/v2/physical/file"
 	physInmem "github.com/openbao/openbao/sdk/v2/physical/inmem"
 
 	sr "github.com/openbao/openbao/serviceregistration"
-	csr "github.com/openbao/openbao/serviceregistration/consul"
 	ksr "github.com/openbao/openbao/serviceregistration/kubernetes"
 )
 
@@ -152,12 +150,10 @@ var (
 		"inmem":      physInmem.NewInmem,
 		"raft":       physRaft.NewRaftBackend,
 		"postgresql": physPostgresql.NewPostgreSQLBackend,
-		"consul":     physConsul.NewConsulBackend,
 	}
 
 	serviceRegistrations = map[string]sr.Factory{
 		"kubernetes": ksr.NewServiceRegistration,
-		"consul":     csr.NewConsulServiceRegistration,
 	}
 
 	initCommandsEnt = func(ui, serverCmdUi cli.Ui, runOpts *RunOptions, commands map[string]cli.CommandFactory) {}
