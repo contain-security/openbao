@@ -54,14 +54,17 @@ func handleSysGenerateRootAttemptGet(core *vault.Core, w http.ResponseWriter, r 
 	}
 
 	// Get the generation configuration
-	generationConfig, err := core.GenerateRootConfiguration()
-	if err != nil {
+	generationConfig, err := core.GenerateRootConfiguration(ctx)
+	switch {
+	// we return the progress as 0 in this case, root generation has not started
+	case errors.Is(err, vault.ErrNoRootGeneration):
+	case err != nil:
 		respondError(w, http.StatusInternalServerError, err)
 		return
 	}
 
 	// Get the progress
-	progress, err := core.GenerateRootProgress()
+	progress, err := core.GenerateRootProgress(ctx)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err)
 		return
@@ -92,9 +95,11 @@ func handleSysGenerateRootAttemptGet(core *vault.Core, w http.ResponseWriter, r 
 }
 
 func handleSysGenerateRootAttemptPut(core *vault.Core, w http.ResponseWriter, r *http.Request, generateStrategy vault.GenerateRootStrategy) {
-	// Parse the request
+	ctx, cancel := core.GetContext()
+	defer cancel()
+
 	var req GenerateRootInitRequest
-	if _, err := parseJSONRequest(r, w, &req); err != nil && err != io.EOF {
+	if err := parseJSONRequest(r, &req); err != nil && !errors.Is(err, io.EOF) {
 		respondError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -118,7 +123,7 @@ func handleSysGenerateRootAttemptPut(core *vault.Core, w http.ResponseWriter, r 
 	}
 
 	// Attemptialize the generation
-	if err := core.GenerateRootInit(req.OTP, req.PGPKey, generateStrategy); err != nil {
+	if err := core.GenerateRootInit(ctx, req.OTP, req.PGPKey, generateStrategy); err != nil {
 		respondError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -132,7 +137,10 @@ func handleSysGenerateRootAttemptPut(core *vault.Core, w http.ResponseWriter, r 
 }
 
 func handleSysGenerateRootAttemptDelete(core *vault.Core, w http.ResponseWriter, r *http.Request) {
-	err := core.GenerateRootCancel()
+	ctx, cancel := core.GetContext()
+	defer cancel()
+
+	err := core.GenerateRootCancel(ctx)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err)
 		return
@@ -144,14 +152,15 @@ func handleSysGenerateRootUpdate(core *vault.Core, generateStrategy vault.Genera
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Parse the request
 		var req GenerateRootUpdateRequest
-		if _, err := parseJSONRequest(r, w, &req); err != nil {
+		if err := parseJSONRequest(r, &req); err != nil && !errors.Is(err, io.EOF) {
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
 		if req.Key == "" {
 			respondError(
 				w, http.StatusBadRequest,
-				errors.New("'key' must be specified in request body as JSON"))
+				errors.New("'key' must be specified in request body as JSON"),
+			)
 			return
 		}
 
@@ -166,7 +175,8 @@ func handleSysGenerateRootUpdate(core *vault.Core, generateStrategy vault.Genera
 			if err != nil {
 				respondError(
 					w, http.StatusBadRequest,
-					errors.New("'key' must be a valid hex or base64 string"))
+					errors.New("'key' must be a valid hex or base64 string"),
+				)
 				return
 			}
 		}

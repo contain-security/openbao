@@ -19,26 +19,21 @@ import (
 type PKIIssueCACommand struct {
 	*BaseCommand
 
-	flagConfig          string
-	flagReturnIndicator string
-	flagDefaultDisabled bool
-	flagList            bool
-
 	flagKeyStorageSource string
 	flagNewIssuerName    string
 }
 
 func (c *PKIIssueCACommand) Synopsis() string {
-	return "Given a parent certificate, and a list of generation parameters, creates an issuer on a specified mount"
+	return "Given a parent certificate and a list of generation parameters, creates an issuer on a specified mount"
 }
 
 func (c *PKIIssueCACommand) Help() string {
 	helpText := `
 Usage: bao pki issue PARENT CHILD_MOUNT options
 
-PARENT is the fully qualified path of the Certificate Authority in vault which will issue the new intermediate certificate.
+PARENT is the fully qualified path of the Certificate Authority in OpenBao which will issue the new intermediate certificate.
 
-CHILD_MOUNT is the path of the mount in vault where the new issuer is saved.
+CHILD_MOUNT is the path of the mount in OpenBao where the new issuer is saved.
 
 options are the superset of the options passed to generate/intermediate and sign-intermediate commands.  At least one option must be set.
 
@@ -86,7 +81,7 @@ func (c *PKIIssueCACommand) Run(args []string) int {
 		return 1
 	}
 
-	stdin := (io.Reader)(os.Stdin)
+	stdin := io.Reader(os.Stdin)
 	if c.flagNonInteractive {
 		stdin = bytes.NewReader(nil)
 	}
@@ -178,11 +173,11 @@ func pkiIssue(c *BaseCommand, parentMountIssuer string, intermediateMount string
 	failureState.certSerialNumber = serialNumber
 
 	caChain := rootResp.Data["ca_chain"].([]interface{})
-	caChainPemBundle := ""
+	var caChainPemBundle strings.Builder
 	for _, cert := range caChain {
-		caChainPemBundle += cert.(string) + "\n"
+		caChainPemBundle.WriteString(cert.(string) + "\n")
 	}
-	failureState.caChain = caChainPemBundle
+	failureState.caChain = caChainPemBundle.String()
 
 	// Next Import Certificate
 	certificate := rootResp.Data["certificate"].(string)
@@ -219,7 +214,7 @@ func pkiIssue(c *BaseCommand, parentMountIssuer string, intermediateMount string
 	// Finally Import CA_Chain (just in case there's more information)
 	if len(caChain) > 2 { // We've already imported parent cert and newly issued cert above
 		importData := map[string]interface{}{
-			"pem_bundle": caChainPemBundle,
+			"pem_bundle": caChainPemBundle.String(),
 		}
 		_, err := client.Logical().Write(intermediateMount+"/issuers/import/cert", importData)
 		if err != nil {

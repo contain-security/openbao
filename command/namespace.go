@@ -23,9 +23,7 @@ func (c *NamespaceCommand) Help() string {
 	helpText := `
 Usage: bao namespace <subcommand> [options] [args]
 
-  This command groups subcommands for interacting with Vault namespaces.
-  These subcommands operate in the context of the namespace that the
-  currently logged in token belongs to.
+  This command groups subcommands for interacting with OpenBao namespaces.
 
   List enabled child namespaces:
 
@@ -58,6 +56,14 @@ Usage: bao namespace <subcommand> [options] [args]
   Unlock the API for an existing namespace:
 
       $ bao namespace unlock
+
+  Seal the namespace:  
+
+      $ bao namespace seal
+
+  Unseal the namespace:
+
+      $ bao namespace unseal
 
   Please see the individual subcommand help for detailed usage information.
 `

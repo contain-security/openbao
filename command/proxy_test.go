@@ -262,7 +262,8 @@ func TestProxy_AutoAuth_UserAgent(t *testing.T) {
 				h.pathToCheck = "auth/approle/login"
 				h.t = t
 				return &h
-			}),
+			},
+		),
 	})
 	cluster.Start()
 	defer cluster.Cleanup()
@@ -363,11 +364,9 @@ api_proxy {
 	cmd.startedCh = make(chan struct{})
 
 	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		cmd.Run([]string{"-config", configPath})
-		wg.Done()
-	}()
+	})
 
 	select {
 	case <-cmd.startedCh:
@@ -395,6 +394,9 @@ api_proxy {
 
 	req = proxyClient.NewRequest("GET", "/v1/auth/token/lookup-self")
 	body = request(t, proxyClient, req, 200)
+	if _, ok := body["data"]; !ok {
+		t.Fatal("body should contain data key")
+	}
 
 	close(cmd.ShutdownCh)
 	wg.Wait()
@@ -419,7 +421,8 @@ func TestProxy_APIProxyWithoutCache_UserAgent(t *testing.T) {
 				h.requestMethodToCheck = "GET"
 				h.t = t
 				return &h
-			}),
+			},
+		),
 	})
 	cluster.Start()
 	defer cluster.Cleanup()
@@ -454,11 +457,9 @@ vault {
 	cmd.startedCh = make(chan struct{})
 
 	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		cmd.Run([]string{"-config", configPath})
-		wg.Done()
-	}()
+	})
 
 	select {
 	case <-cmd.startedCh:
@@ -506,7 +507,8 @@ func TestProxy_APIProxyWithCache_UserAgent(t *testing.T) {
 				h.requestMethodToCheck = "GET"
 				h.t = t
 				return &h
-			}),
+			},
+		),
 	})
 	cluster.Start()
 	defer cluster.Cleanup()
@@ -546,11 +548,9 @@ vault {
 	cmd.startedCh = make(chan struct{})
 
 	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		cmd.Run([]string{"-config", configPath})
-		wg.Done()
-	}()
+	})
 
 	select {
 	case <-cmd.startedCh:
@@ -624,11 +624,9 @@ vault {
 	cmd.startedCh = make(chan struct{})
 
 	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		cmd.Run([]string{"-config", configPath})
-		wg.Done()
-	}()
+	})
 
 	select {
 	case <-cmd.startedCh:
@@ -796,11 +794,9 @@ vault {
 			cmd.startedCh = make(chan struct{})
 
 			wg := &sync.WaitGroup{}
-			wg.Add(1)
-			go func() {
+			wg.Go(func() {
 				cmd.Run([]string{"-config", configPath})
-				wg.Done()
-			}()
+			})
 
 			select {
 			case <-cmd.startedCh:
@@ -873,16 +869,14 @@ listener "tcp" {
 	cmd.startedCh = make(chan struct{})
 
 	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		code := cmd.Run([]string{"-config", configPath})
 		if code != 0 {
 			t.Errorf("non-zero return code when running proxy: %d", code)
 			t.Logf("STDOUT from proxy:\n%s", ui.OutputWriter.String())
 			t.Logf("STDERR from proxy:\n%s", ui.ErrorWriter.String())
 		}
-		wg.Done()
-	}()
+	})
 
 	select {
 	case <-cmd.startedCh:
@@ -979,11 +973,9 @@ cache {}
 	cmd.startedCh = make(chan struct{})
 
 	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		cmd.Run([]string{"-config", configPath})
-		wg.Done()
-	}()
+	})
 
 	select {
 	case <-cmd.startedCh:

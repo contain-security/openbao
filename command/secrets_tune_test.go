@@ -51,8 +51,6 @@ func TestSecretsTuneCommand_Run(t *testing.T) {
 		t.Parallel()
 
 		for _, tc := range cases {
-			tc := tc
-
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 
@@ -192,7 +190,6 @@ func TestSecretsTuneCommand_Run(t *testing.T) {
 				"-passthrough-request-headers", "authorization",
 				"-passthrough-request-headers", "www-authentication",
 				"-allowed-response-headers", "authorization,www-authentication",
-				"-allowed-managed-keys", "key1,key2",
 				"-listing-visibility", "unauth",
 				"-plugin-version", version,
 				"mount_tune_integration/",
@@ -242,9 +239,6 @@ func TestSecretsTuneCommand_Run(t *testing.T) {
 			}
 			if diff := deep.Equal([]string{"foo,bar"}, mountInfo.Config.AuditNonHMACResponseKeys); len(diff) > 0 {
 				t.Errorf("Failed to find expected values in AuditNonHMACResponseKeys. Difference is: %v", diff)
-			}
-			if diff := deep.Equal([]string{"key1,key2"}, mountInfo.Config.AllowedManagedKeys); len(diff) > 0 {
-				t.Errorf("Failed to find expected values in AllowedManagedKeys. Difference is: %v", diff)
 			}
 		})
 

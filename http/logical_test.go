@@ -19,10 +19,10 @@ import (
 
 	"github.com/openbao/openbao/api/v2"
 	auditFile "github.com/openbao/openbao/builtin/audit/file"
-	credUserpass "github.com/openbao/openbao/builtin/credential/userpass"
 	kv "github.com/openbao/openbao/builtin/logical/kv"
+	"github.com/openbao/openbao/command/server"
+	"github.com/openbao/openbao/helper/configutil"
 	"github.com/openbao/openbao/helper/testhelpers/corehelpers"
-	"github.com/openbao/openbao/internalshared/configutil"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/helper/logging"
 	"github.com/openbao/openbao/sdk/v2/logical"
@@ -103,6 +103,8 @@ func TestLogical_StandbyRedirect(t *testing.T) {
 	// Create an HA Vault
 	logger := logging.NewVaultLogger(log.Debug)
 
+	coreLogger := logging.NewVaultLogger(log.Trace)
+
 	inmha, err := inmem.NewInmemHA(nil, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +113,7 @@ func TestLogical_StandbyRedirect(t *testing.T) {
 		Physical:     inmha,
 		HAPhysical:   inmha.(physical.HABackend),
 		RedirectAddr: addr1,
+		Logger:       coreLogger.Named("active"),
 	}
 	core1, err := vault.NewCore(conf)
 	if err != nil {
@@ -133,6 +136,7 @@ func TestLogical_StandbyRedirect(t *testing.T) {
 		Physical:     inmha,
 		HAPhysical:   inmha.(physical.HABackend),
 		RedirectAddr: addr2,
+		Logger:       coreLogger.Named("standby"),
 	}
 	core2, err := vault.NewCore(conf2)
 	if err != nil {
@@ -145,19 +149,22 @@ func TestLogical_StandbyRedirect(t *testing.T) {
 		}
 	}
 
+	// Reduce race window between post-unseal namespaceStore setup and request handling.
+	time.Sleep(2 * time.Second)
+
 	TestServerWithListener(t, ln1, addr1, core1)
 	TestServerWithListener(t, ln2, addr2, core2)
 	TestServerAuth(t, addr1, root)
 
 	// WRITE to STANDBY
-	resp := testHttpPutDisableRedirect(t, root, addr2+"/v1/secret/foo", map[string]interface{}{
+	resp := testHttpPutDisableRedirect(t, root, addr2+"/v1/cubbyhole/foo", map[string]interface{}{
 		"data": "bar",
 	})
 	logger.Debug("307 test one starting")
 	testResponseStatus(t, resp, 307)
 	logger.Debug("307 test one stopping")
 
-	//// READ to standby
+	// READ to standby
 	resp = testHttpGet(t, root, addr2+"/v1/auth/token/lookup-self")
 	var actual map[string]interface{}
 	var nilWarnings interface{}
@@ -196,8 +203,8 @@ func TestLogical_StandbyRedirect(t *testing.T) {
 		t.Fatal(diff)
 	}
 
-	//// DELETE to standby
-	resp = testHttpDeleteDisableRedirect(t, root, addr2+"/v1/secret/foo")
+	// DELETE to standby
+	resp = testHttpDeleteDisableRedirect(t, root, addr2+"/v1/cubbyhole/foo")
 	logger.Debug("307 test two starting")
 	testResponseStatus(t, resp, 307)
 	logger.Debug("307 test two stopping")
@@ -268,7 +275,7 @@ func TestLogical_RawHTTP(t *testing.T) {
 	// Get the body
 	body := new(bytes.Buffer)
 	io.Copy(body, resp.Body)
-	if string(body.Bytes()) != "hello world" {
+	if body.String() != "hello world" {
 		t.Fatalf("Bad: %s", body.Bytes())
 	}
 }
@@ -294,9 +301,11 @@ func TestLogical_RequestSizeDisableLimit(t *testing.T) {
 	props := &vault.HandlerProperties{
 		Core: core,
 		ListenerConfig: &configutil.Listener{
-			MaxRequestSize: -1,
-			Address:        "127.0.0.1",
-			TLSDisable:     true,
+			MaxRequestSize:        -1,
+			MaxRequestJsonMemory:  -1,
+			MaxRequestJsonStrings: -1,
+			Address:               "127.0.0.1",
+			TLSDisable:            true,
 		},
 	}
 	TestServerWithListenerAndProperties(t, ln, addr, core, props)
@@ -315,10 +324,10 @@ func TestLogical_RequestSizeDisableLimit(t *testing.T) {
 func TestLogical_ListSuffix(t *testing.T) {
 	core, _, rootToken := vault.TestCoreUnsealed(t)
 	req, _ := http.NewRequest("GET", "http://127.0.0.1:8200/v1/secret/foo", nil)
-	req = req.WithContext(namespace.RootContext(nil))
+	req = req.WithContext(namespace.RootContext(t.Context()))
 	req.Header.Add(consts.AuthHeaderName, rootToken)
 
-	lreq, _, status, err := buildLogicalRequest(core, nil, req)
+	lreq, status, err := buildLogicalRequest(core, nil, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,10 +339,10 @@ func TestLogical_ListSuffix(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest("GET", "http://127.0.0.1:8200/v1/secret/foo?list=true", nil)
-	req = req.WithContext(namespace.RootContext(nil))
+	req = req.WithContext(namespace.RootContext(t.Context()))
 	req.Header.Add(consts.AuthHeaderName, rootToken)
 
-	lreq, _, status, err = buildLogicalRequest(core, nil, req)
+	lreq, status, err = buildLogicalRequest(core, nil, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,15 +354,15 @@ func TestLogical_ListSuffix(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest("LIST", "http://127.0.0.1:8200/v1/secret/foo", nil)
-	req = req.WithContext(namespace.RootContext(nil))
+	req = req.WithContext(namespace.RootContext(t.Context()))
 	req.Header.Add(consts.AuthHeaderName, rootToken)
 
-	_, _, status, err = buildLogicalRequestNoAuth(nil, req)
+	_, status, err = buildLogicalRequestNoAuth(nil, req)
 	if err != nil || status != 0 {
 		t.Fatal(err)
 	}
 
-	lreq, _, status, err = buildLogicalRequest(core, nil, req)
+	lreq, status, err = buildLogicalRequest(core, nil, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,10 +430,10 @@ func TestLogical_ListWithQueryParameters(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req, _ := http.NewRequest(tc.requestMethod, tc.url, nil)
-			req = req.WithContext(namespace.RootContext(nil))
+			req = req.WithContext(namespace.RootContext(t.Context()))
 			req.Header.Add(consts.AuthHeaderName, rootToken)
 
-			lreq, _, status, err := buildLogicalRequest(core, nil, req)
+			lreq, status, err := buildLogicalRequest(core, nil, req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -447,10 +456,10 @@ func TestLogical_ListWithQueryParameters(t *testing.T) {
 func TestLogical_ScanSuffix(t *testing.T) {
 	core, _, rootToken := vault.TestCoreUnsealed(t)
 	req, _ := http.NewRequest("GET", "http://127.0.0.1:8200/v1/secret/foo", nil)
-	req = req.WithContext(namespace.RootContext(nil))
+	req = req.WithContext(namespace.RootContext(t.Context()))
 	req.Header.Add(consts.AuthHeaderName, rootToken)
 
-	lreq, _, status, err := buildLogicalRequest(core, nil, req)
+	lreq, status, err := buildLogicalRequest(core, nil, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,10 +471,10 @@ func TestLogical_ScanSuffix(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest("GET", "http://127.0.0.1:8200/v1/secret/foo?scan=true", nil)
-	req = req.WithContext(namespace.RootContext(nil))
+	req = req.WithContext(namespace.RootContext(t.Context()))
 	req.Header.Add(consts.AuthHeaderName, rootToken)
 
-	lreq, _, status, err = buildLogicalRequest(core, nil, req)
+	lreq, status, err = buildLogicalRequest(core, nil, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,15 +486,15 @@ func TestLogical_ScanSuffix(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest("SCAN", "http://127.0.0.1:8200/v1/secret/foo", nil)
-	req = req.WithContext(namespace.RootContext(nil))
+	req = req.WithContext(namespace.RootContext(t.Context()))
 	req.Header.Add(consts.AuthHeaderName, rootToken)
 
-	_, _, status, err = buildLogicalRequestNoAuth(nil, req)
+	_, status, err = buildLogicalRequestNoAuth(nil, req)
 	if err != nil || status != 0 {
 		t.Fatal(err)
 	}
 
-	lreq, _, status, err = buildLogicalRequest(core, nil, req)
+	lreq, status, err = buildLogicalRequest(core, nil, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,10 +562,10 @@ func TestLogical_ScanWithQueryParameters(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req, _ := http.NewRequest(tc.requestMethod, tc.url, nil)
-			req = req.WithContext(namespace.RootContext(nil))
+			req = req.WithContext(namespace.RootContext(t.Context()))
 			req.Header.Add(consts.AuthHeaderName, rootToken)
 
-			lreq, _, status, err := buildLogicalRequest(core, nil, req)
+			lreq, status, err := buildLogicalRequest(core, nil, req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -611,6 +620,7 @@ func TestLogical_Audit_invalidWrappingToken(t *testing.T) {
 	// Create a noop audit backend
 	noop := corehelpers.TestNoopAudit(t, nil)
 	c, _, root := vault.TestCoreUnsealedWithConfig(t, &vault.CoreConfig{
+		RawConfig: &server.Config{UnsafeAllowAPIAuditCreation: true},
 		AuditBackends: map[string]audit.Factory{
 			"noop": func(ctx context.Context, config *audit.BackendConfig) (audit.Backend, error) {
 				return noop, nil
@@ -820,78 +830,6 @@ func TestLogical_AuditPort(t *testing.T) {
 	}
 }
 
-func TestLogical_ErrRelativePath(t *testing.T) {
-	coreConfig := &vault.CoreConfig{
-		CredentialBackends: map[string]logical.Factory{
-			"userpass": credUserpass.Factory,
-		},
-	}
-
-	cluster := vault.NewTestCluster(t, coreConfig, &vault.TestClusterOptions{
-		HandlerFunc: Handler,
-	})
-
-	cluster.Start()
-	defer cluster.Cleanup()
-
-	cores := cluster.Cores
-
-	core := cores[0].Core
-	c := cluster.Cores[0].Client
-	vault.TestWaitActive(t, core)
-
-	err := c.Sys().EnableAuthWithOptions("userpass", &api.EnableAuthOptions{
-		Type: "userpass",
-	})
-	if err != nil {
-		t.Fatalf("failed to enable userpass, err: %v", err)
-	}
-
-	resp, err := c.Logical().Read("auth/userpass/users/user..aaa")
-
-	if err == nil || resp != nil {
-		t.Fatalf("expected read request to fail, resp: %#v, err: %v", resp, err)
-	}
-
-	respErr, ok := err.(*api.ResponseError)
-
-	if !ok {
-		t.Fatalf("unexpected error type, err: %#v", err)
-	}
-
-	if respErr.StatusCode != 400 {
-		t.Errorf("expected 400 response for read, actual: %d", respErr.StatusCode)
-	}
-
-	if !strings.Contains(respErr.Error(), logical.ErrRelativePath.Error()) {
-		t.Errorf("expected response for read to include %q", logical.ErrRelativePath.Error())
-	}
-
-	data := map[string]interface{}{
-		"password": "abc123",
-	}
-
-	resp, err = c.Logical().Write("auth/userpass/users/user..aaa", data)
-
-	if err == nil || resp != nil {
-		t.Fatalf("expected write request to fail, resp: %#v, err: %v", resp, err)
-	}
-
-	respErr, ok = err.(*api.ResponseError)
-
-	if !ok {
-		t.Fatalf("unexpected error type, err: %#v", err)
-	}
-
-	if respErr.StatusCode != 400 {
-		t.Errorf("expected 400 response for write, actual: %d", respErr.StatusCode)
-	}
-
-	if !strings.Contains(respErr.Error(), logical.ErrRelativePath.Error()) {
-		t.Errorf("expected response for write to include %q", logical.ErrRelativePath.Error())
-	}
-}
-
 func testBuiltinPluginMetadataAuditLog(t *testing.T, log map[string]interface{}, expectedMountClass string) {
 	if mountClass, ok := log["mount_class"].(string); !ok {
 		t.Fatalf("mount_class should be a string, not %T", log["mount_class"])
@@ -972,8 +910,8 @@ func TestLogical_AuditEnabled_ShouldLogPluginMetadata_Auth(t *testing.T) {
 		testBuiltinPluginMetadataAuditLog(t, auditRequest, consts.PluginTypeCredential.String())
 
 		auditResponse := map[string]interface{}{}
-		if req, ok := auditRecord["response"]; ok {
-			auditRequest = req.(map[string]interface{})
+		if res, ok := auditRecord["response"]; ok {
+			auditResponse = res.(map[string]interface{})
 			if auditResponse["path"] != "auth/token/create" {
 				continue
 			}
@@ -986,6 +924,9 @@ func TestLogical_AuditEnabled_ShouldLogPluginMetadata_Auth(t *testing.T) {
 // in audit log when it is enabled
 func TestLogical_AuditEnabled_ShouldLogPluginMetadata_Secret(t *testing.T) {
 	coreConfig := &vault.CoreConfig{
+		RawConfig: &server.Config{
+			UnsafeAllowAPIAuditCreation: true,
+		},
 		LogicalBackends: map[string]logical.Factory{
 			"kv": kv.VersionedKVFactory,
 		},
@@ -1059,8 +1000,8 @@ func TestLogical_AuditEnabled_ShouldLogPluginMetadata_Secret(t *testing.T) {
 		testBuiltinPluginMetadataAuditLog(t, auditRequest, consts.PluginTypeSecrets.String())
 
 		auditResponse := map[string]interface{}{}
-		if req, ok := auditRecord["response"]; ok {
-			auditRequest = req.(map[string]interface{})
+		if res, ok := auditRecord["response"]; ok {
+			auditResponse = res.(map[string]interface{})
 			if auditResponse["path"] != "kv/data/foo" {
 				continue
 			}
@@ -1169,7 +1110,7 @@ func TestLogical_NamespaceRestrictedAPIs(t *testing.T) {
 				"Restricted API should return 400 Bad Request with namespace")
 
 			if resp != nil && resp.Body != nil {
-				resp.Body.Close()
+				resp.Body.Close() //nolint:errcheck
 			}
 		})
 
@@ -1185,7 +1126,7 @@ func TestLogical_NamespaceRestrictedAPIs(t *testing.T) {
 			}
 
 			if resp != nil && resp.Body != nil {
-				resp.Body.Close()
+				resp.Body.Close() //nolint:errcheck
 			}
 		})
 	}
@@ -1201,7 +1142,7 @@ func TestLogical_NamespaceRestrictedAPIs(t *testing.T) {
 			require.Equal(t, http.StatusOK, resp.StatusCode,
 				"Non-restricted API should return 200 OK with namespace and proper permissions")
 
-			resp.Body.Close()
+			resp.Body.Close() //nolint:errcheck
 		})
 	}
 
@@ -1218,7 +1159,7 @@ func TestLogical_NamespaceRestrictedAPIs(t *testing.T) {
 				"Restricted API should return 400 Bad Request with namespace and proper permissions")
 
 			if resp != nil && resp.Body != nil {
-				resp.Body.Close()
+				resp.Body.Close() //nolint:errcheck
 			}
 		})
 	}

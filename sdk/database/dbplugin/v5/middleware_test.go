@@ -4,7 +4,6 @@
 package dbplugin
 
 import (
-	"context"
 	"errors"
 	"net/url"
 	"reflect"
@@ -53,7 +52,8 @@ func TestDatabaseErrorSanitizerMiddleware(t *testing.T) {
 		},
 		"multiple secrets": {
 			inputErr: errors.New("here is my password: iofsd9473tg"),
-			secretsFunc: secretFunc(t,
+			secretsFunc: secretFunc(
+				t,
 				"iofsd9473tg", "<redacted>",
 				"password", "<this was the word password>",
 			),
@@ -91,7 +91,7 @@ func TestDatabaseErrorSanitizerMiddleware(t *testing.T) {
 
 		expectedErr := errors.New("password: <redacted> with some stuff after it")
 
-		_, err := mw.Initialize(context.Background(), InitializeRequest{})
+		_, err := mw.Initialize(t.Context(), InitializeRequest{})
 		if !reflect.DeepEqual(err, expectedErr) {
 			t.Fatalf("Actual err: %s\n Expected err: %s", err, expectedErr)
 		}
@@ -117,7 +117,7 @@ func TestDatabaseErrorSanitizerMiddleware(t *testing.T) {
 
 		expectedErr := errors.New("password: <redacted> with some stuff after it")
 
-		_, err := mw.NewUser(context.Background(), NewUserRequest{})
+		_, err := mw.NewUser(t.Context(), NewUserRequest{})
 		if !reflect.DeepEqual(err, expectedErr) {
 			t.Fatalf("Actual err: %s\n Expected err: %s", err, expectedErr)
 		}
@@ -143,7 +143,7 @@ func TestDatabaseErrorSanitizerMiddleware(t *testing.T) {
 
 		expectedErr := errors.New("password: <redacted> with some stuff after it")
 
-		_, err := mw.UpdateUser(context.Background(), UpdateUserRequest{})
+		_, err := mw.UpdateUser(t.Context(), UpdateUserRequest{})
 		if !reflect.DeepEqual(err, expectedErr) {
 			t.Fatalf("Actual err: %s\n Expected err: %s", err, expectedErr)
 		}
@@ -169,7 +169,7 @@ func TestDatabaseErrorSanitizerMiddleware(t *testing.T) {
 
 		expectedErr := errors.New("password: <redacted> with some stuff after it")
 
-		_, err := mw.DeleteUser(context.Background(), DeleteUserRequest{})
+		_, err := mw.DeleteUser(t.Context(), DeleteUserRequest{})
 		if !reflect.DeepEqual(err, expectedErr) {
 			t.Fatalf("Actual err: %s\n Expected err: %s", err, expectedErr)
 		}
@@ -261,7 +261,7 @@ func TestTracingMiddleware(t *testing.T) {
 			next:   db,
 			logger: logger,
 		}
-		_, err := mw.Initialize(context.Background(), InitializeRequest{})
+		_, err := mw.Initialize(t.Context(), InitializeRequest{})
 		if err != nil {
 			t.Fatalf("Expected no error, but got: %s", err)
 		}
@@ -280,7 +280,7 @@ func TestTracingMiddleware(t *testing.T) {
 			next:   db,
 			logger: logger,
 		}
-		_, err := mw.NewUser(context.Background(), NewUserRequest{})
+		_, err := mw.NewUser(t.Context(), NewUserRequest{})
 		if err != nil {
 			t.Fatalf("Expected no error, but got: %s", err)
 		}
@@ -299,7 +299,7 @@ func TestTracingMiddleware(t *testing.T) {
 			next:   db,
 			logger: logger,
 		}
-		_, err := mw.UpdateUser(context.Background(), UpdateUserRequest{})
+		_, err := mw.UpdateUser(t.Context(), UpdateUserRequest{})
 		if err != nil {
 			t.Fatalf("Expected no error, but got: %s", err)
 		}
@@ -318,7 +318,7 @@ func TestTracingMiddleware(t *testing.T) {
 			next:   db,
 			logger: logger,
 		}
-		_, err := mw.DeleteUser(context.Background(), DeleteUserRequest{})
+		_, err := mw.DeleteUser(t.Context(), DeleteUserRequest{})
 		if err != nil {
 			t.Fatalf("Expected no error, but got: %s", err)
 		}
@@ -376,7 +376,7 @@ func TestMetricsMiddleware(t *testing.T) {
 			next:    db,
 			typeStr: "metrics",
 		}
-		_, err := mw.Initialize(context.Background(), InitializeRequest{})
+		_, err := mw.Initialize(t.Context(), InitializeRequest{})
 		if err != nil {
 			t.Fatalf("Expected no error, but got: %s", err)
 		}
@@ -394,7 +394,7 @@ func TestMetricsMiddleware(t *testing.T) {
 			next:    db,
 			typeStr: "metrics",
 		}
-		_, err := mw.NewUser(context.Background(), NewUserRequest{})
+		_, err := mw.NewUser(t.Context(), NewUserRequest{})
 		if err != nil {
 			t.Fatalf("Expected no error, but got: %s", err)
 		}
@@ -412,7 +412,7 @@ func TestMetricsMiddleware(t *testing.T) {
 			next:    db,
 			typeStr: "metrics",
 		}
-		_, err := mw.UpdateUser(context.Background(), UpdateUserRequest{})
+		_, err := mw.UpdateUser(t.Context(), UpdateUserRequest{})
 		if err != nil {
 			t.Fatalf("Expected no error, but got: %s", err)
 		}
@@ -430,7 +430,7 @@ func TestMetricsMiddleware(t *testing.T) {
 			next:    db,
 			typeStr: "metrics",
 		}
-		_, err := mw.DeleteUser(context.Background(), DeleteUserRequest{})
+		_, err := mw.DeleteUser(t.Context(), DeleteUserRequest{})
 		if err != nil {
 			t.Fatalf("Expected no error, but got: %s", err)
 		}

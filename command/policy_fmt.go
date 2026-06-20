@@ -10,9 +10,9 @@ import (
 
 	"github.com/hashicorp/cli"
 	"github.com/hashicorp/hcl/hcl/printer"
-	homedir "github.com/mitchellh/go-homedir"
+	"github.com/openbao/openbao/helper/homedir"
 	"github.com/openbao/openbao/helper/namespace"
-	"github.com/openbao/openbao/vault"
+	"github.com/openbao/openbao/vault/policy"
 	"github.com/posener/complete"
 )
 
@@ -93,7 +93,7 @@ func (c *PolicyFmtCommand) Run(args []string) int {
 
 	// Actually parse the policy. We always use the root namespace here because
 	// we don't want to modify the results.
-	if _, err := vault.ParseACLPolicy(namespace.RootNamespace, string(b)); err != nil {
+	if _, err := policy.ParseACLPolicy(namespace.RootNamespace, string(b)); err != nil {
 		c.UI.Error(err.Error())
 		return 1
 	}

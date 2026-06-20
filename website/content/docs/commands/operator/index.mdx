@@ -54,8 +54,9 @@ Usage: bao operator <subcommand> [options] [args]
 Subcommands:
     generate-root    Generates a new root token
     init             Initializes a server
-    key-status       Provides information about the active encryption key
-    rekey            Generates new unseal keys
+    key-status       Provides information about specific namespace barrier active encryption key
+    rekey            Generates new unseal keys (deprecated)
+    rotate-keys      Generates new unseal keys
     rotate           Rotates the underlying encryption key
     seal             Seals the OpenBao server
     step-down        Forces OpenBao to resign active duty

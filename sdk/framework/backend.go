@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
 	"sort"
@@ -17,18 +18,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openbao/go-kms-wrapping/entropy/v2"
-
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	log "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/go-secure-stdlib/parseutil"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/helper/errutil"
-	"github.com/openbao/openbao/sdk/v2/helper/license"
 	"github.com/openbao/openbao/sdk/v2/helper/logging"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
+
+// regexSingletonCache is used to reduce memory of mounting of multiple
+// builtin plugins of the same type. Frequently these will use similar
+// patterns and thus a singleton cache of regex is useful for limiting
+// redundant memory usage. This is safe as .Longest() is never called
+// on the resulting regex.
+var regexSingletonCache sync.Map
 
 // Backend is an implementation of logical.Backend that allows
 // the implementer to code a backend using a much more programmer-friendly
@@ -165,9 +170,7 @@ func (b *Backend) HandleExistenceCheck(ctx context.Context, req *logical.Request
 	// Build up the data for the route, with the URL taking priority
 	// for the fields over the PUT data.
 	raw := make(map[string]interface{}, len(path.Fields))
-	for k, v := range req.Data {
-		raw[k] = v
-	}
+	maps.Copy(raw, req.Data)
 	for k, v := range captures {
 		raw[k] = v
 	}
@@ -184,7 +187,7 @@ func (b *Backend) HandleExistenceCheck(ctx context.Context, req *logical.Request
 
 	// Call the callback with the request and the data
 	exists, err = path.ExistenceCheck(ctx, req, &fd)
-	return
+	return checkFound, exists, err
 }
 
 // HandleRequest is the logical.Backend implementation.
@@ -211,14 +214,6 @@ func (b *Backend) HandleRequest(ctx context.Context, req *logical.Request) (*log
 	path, captures := b.route(req.Path)
 	if path == nil {
 		return nil, logical.ErrUnsupportedPath
-	}
-
-	// Check if a feature is required and if the license has that feature
-	if path.FeatureRequired != license.FeatureNone {
-		hasFeature := b.system.HasFeature(path.FeatureRequired)
-		if !hasFeature {
-			return nil, logical.CodedError(401, "Feature Not Enabled")
-		}
 	}
 
 	// Build up the data for the route, with the URL taking priority
@@ -286,7 +281,7 @@ func (b *Backend) HandleRequest(ctx context.Context, req *logical.Request) (*log
 	if req.Operation != logical.HelpOperation {
 		err := fd.Validate()
 		if err != nil {
-			return logical.ErrorResponse(fmt.Sprintf("Field validation failed: %s", err.Error())), nil
+			return logical.ErrorResponse("Field validation failed: %s", err.Error()), nil
 		}
 	}
 
@@ -403,14 +398,8 @@ func (b *Backend) Setup(ctx context.Context, config *logical.BackendConfig) erro
 	return nil
 }
 
-// GetRandomReader returns an io.Reader to use for generating key material in
-// backends. If the backend has access to an external entropy source it will
-// return that, otherwise it returns crypto/rand.Reader.
+// GetRandomReader returns crypto/rand.Reader.
 func (b *Backend) GetRandomReader() io.Reader {
-	if sourcer, ok := b.System().(entropy.Sourcer); ok {
-		return entropy.NewReader(sourcer)
-	}
-
 	return rand.Reader
 }
 
@@ -471,7 +460,12 @@ func (b *Backend) init() {
 		if p.Pattern[len(p.Pattern)-1] != '$' {
 			p.Pattern = p.Pattern + "$"
 		}
-		b.pathsRe[i] = regexp.MustCompile(p.Pattern)
+		regexRaw, ok := regexSingletonCache.Load(p.Pattern)
+		if !ok {
+			regexRaw = regexp.MustCompile(p.Pattern)
+			regexSingletonCache.Store(p.Pattern, regexRaw)
+		}
+		b.pathsRe[i] = regexRaw.(*regexp.Regexp)
 	}
 }
 
@@ -690,9 +684,10 @@ type FieldSchema struct {
 	Default     interface{}
 	Description string
 
-	// The Required and Deprecated members are only used by openapi, and are not actually
-	// used by the framework.
-	Required   bool
+	// Whether this field is required.
+	Required bool
+
+	// Whether this field is deprecated. This only shows in the help text.
 	Deprecated bool
 
 	// Query indicates this field will be sent as a query parameter:

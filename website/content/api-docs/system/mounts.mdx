@@ -128,11 +128,11 @@ This endpoint enables a new secrets engine at the given path.
 - `path` `(string: <required>)` – Specifies the path where the secrets engine
   will be mounted. This is specified as part of the URL.
 
-:::danger
+  :::danger
 
- **NOTE:** Use ASCII printable characters to specify the desired path.
+  **NOTE:** Use ASCII printable characters to specify the desired path.
 
-:::
+  :::
 
 - `type` `(string: <required>)` – Specifies the type of the backend, such as
   "kv".
@@ -232,7 +232,7 @@ simple as increasing the timeout (in the event of timeout errors).
 
 For recovery situations where the secret was manually removed from the
 secrets backing service, one can force a secrets engine disable in OpenBao by
-performing a [force revoke](/api-docs/system/leases)
+performing a [force revoke](leases.mdx)
 on the mount prefix, followed by a secrets disable when that completes.
 If the underlying secrets were not manually cleaned up, this method might result
 in dangling credentials. This is meant for extreme circumstances.
@@ -340,7 +340,7 @@ This endpoint tunes configuration parameters for a given mount point.
   overrides the global default. A value of `0` is equivalent to the system
   default TTL.
 
-- `max_lease_ttl` `(int: 0)` – Specifies the maximum time-to-live. This
+- `max_lease_ttl` `(int: 0)` <a name="max_lease_ttl-1"></a> – Specifies the maximum time-to-live. This
   overrides the global default. A value of `0` are equivalent and set to the
   system max TTL.
 

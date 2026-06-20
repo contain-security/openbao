@@ -4,15 +4,19 @@
 package http
 
 import (
-	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/hashicorp/go-multierror"
+	"github.com/openbao/openbao/helper/buffer"
 	"github.com/openbao/openbao/helper/namespace"
 	"github.com/openbao/openbao/sdk/v2/logical"
 
@@ -34,6 +38,28 @@ var (
 	adjustResponse = func(core *vault.Core, w http.ResponseWriter, req *logical.Request) {}
 )
 
+func isSnapshotRequest(req *http.Request) bool {
+	return req.URL.Path == "/v1/sys/storage/raft/snapshot" ||
+		req.URL.Path == "/v1/sys/storage/raft/snapshot-force"
+}
+
+func resetBody(req *http.Request) error {
+	if req.Body == nil || req.Body == http.NoBody || isSnapshotRequest(req) {
+		return nil
+	}
+
+	seekable, ok := req.Body.(io.Seeker)
+	if !ok {
+		return fmt.Errorf("unable to seek body: wrong type")
+	}
+
+	if _, err := seekable.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func wrapMaxRequestSizeHandler(handler http.Handler, props *vault.HandlerProperties) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var maxRequestSize int64
@@ -43,15 +69,58 @@ func wrapMaxRequestSizeHandler(handler http.Handler, props *vault.HandlerPropert
 		if maxRequestSize == 0 {
 			maxRequestSize = DefaultMaxRequestSize
 		}
-		ctx := r.Context()
-		originalBody := r.Body
-		if maxRequestSize > 0 {
-			r.Body = http.MaxBytesReader(w, r.Body, maxRequestSize)
-		}
-		ctx = logical.CreateContextOriginalBody(ctx, originalBody)
-		r = r.WithContext(ctx)
 
-		handler.ServeHTTP(w, r)
+		// Before continuing, clone the request: per https://pkg.go.dev/net/http#Handler,
+		//
+		// > Except for reading the body, handlers should not modify the
+		// > provided Request.
+		//
+		// As we're intentionally mutating the body (and not simply reading
+		// it), clone it first.
+		ctx := r.Context()
+		clonedReq := r.Clone(ctx)
+
+		originalBody := clonedReq.Body
+		if maxRequestSize > 0 {
+			clonedReq.Body = http.MaxBytesReader(w, clonedReq.Body, maxRequestSize)
+		}
+
+		ctx = logical.CreateContextOriginalBody(ctx, originalBody)
+		clonedReq = clonedReq.WithContext(ctx)
+
+		// Now that we've size-limited the body, copy it into a buffer: we
+		// need this so that we can:
+		//
+		// 1. Read the role for login requests with a role-specific rate-limit
+		//    quota.
+		// 2. Tell the difference between JSON and Form requests when the
+		//    Content-Type is form (to allow legacy behavior).
+		// 3. For enforcing JSON resource limits.
+		// 4. For request forwarding, to send the original body along with
+		//    the request.
+		//
+		// While theoretically this could delay processing of the body, in
+		// reality the above already enforces that: json.Unmarshal(...) in
+		// either code path will stall until all data is available, though
+		// memory access patterns might be different. We trust r.Body to
+		// throw an IO error on context cancellation and we've already
+		// enforced maximum limits.
+		//
+		// In the event this is a request to Raft snapshotting, we skip this;
+		// snapshots are expected to exceed the maximum request size and we
+		// cannot interpose the request.
+		if !isSnapshotRequest(clonedReq) {
+			var err error
+			clonedReq.Body, err = buffer.NewSeekableReader(clonedReq.Body)
+			if err != nil {
+				respondError(w, http.StatusInternalServerError, err)
+				return
+			}
+		}
+
+		// Subsequent handlers can now type assert to *seekableReader and
+		// be able to seek back to beginning.
+		handler.ServeHTTP(w, clonedReq)
 	})
 }
 
@@ -106,18 +175,13 @@ func rateLimitQuotaWrapping(handler http.Handler, core *vault.Core) http.Handler
 		// If any role-based quotas are enabled for this namespace/mount, just
 		// do the role resolution once here.
 		if requiresResolveRole {
-			buf := bytes.Buffer{}
-			teeReader := io.TeeReader(r.Body, &buf)
-			role := core.DetermineRoleFromLoginRequestFromReader(ctx, mountPath, teeReader)
+			role := core.DetermineRoleFromLoginRequestFromReader(ctx, mountPath, r.Body)
 
-			// Reset the body if it was read
-			if buf.Len() > 0 {
-				r.Body = io.NopCloser(&buf)
-				originalBody, ok := logical.ContextOriginalBodyValue(r.Context())
-				if ok {
-					r = r.WithContext(logical.CreateContextOriginalBody(r.Context(), newMultiReaderCloser(&buf, originalBody)))
-				}
+			// Reset our body to the beginning.
+			if err := resetBody(r); err != nil {
+				respondError(w, http.StatusInternalServerError, err)
 			}
+
 			// add an entry to the context to prevent recalculating request role unnecessarily
 			r = r.WithContext(context.WithValue(r.Context(), logical.CtxKeyRequestRole{}, role))
 			quotaReq.Role = role
@@ -140,12 +204,10 @@ func rateLimitQuotaWrapping(handler http.Handler, core *vault.Core) http.Handler
 			quotaErr := fmt.Errorf("request path %q: %w", path, quotas.ErrRateLimitQuotaExceeded)
 			respondError(w, http.StatusTooManyRequests, quotaErr)
 
-			if core.Logger().IsTrace() {
-				core.Logger().Trace("request rejected due to rate limit quota violation", "request_path", path)
-			}
+			core.Logger().Trace("request rejected due to rate limit quota violation", "request_path", path)
 
 			if core.RateLimitAuditLoggingEnabled() {
-				req, _, status, err := buildLogicalRequestNoAuth(w, r)
+				req, status, err := buildLogicalRequestNoAuth(w, r)
 				if err != nil || status != 0 {
 					respondError(w, status, err)
 					return
@@ -196,4 +258,36 @@ func (m *multiReaderCloser) Close() error {
 		}
 	}
 	return err
+}
+
+// https://www.rfc-editor.org/rfc/rfc9440.html#name-encoding
+// The cert is base64 encoded with colons at the beginning and end.
+func rfc9440DecodeHeader(headerValue string) (string, error) {
+	// validate that it starts and ends with :
+	if len(headerValue) > 2 && headerValue[0] == ':' && headerValue[len(headerValue)-1] == ':' {
+		// return the value between the :
+		headerValue = headerValue[1 : len(headerValue)-1]
+	} else {
+		return "", errors.New("error decoding RFC9440 client certificate header")
+	}
+	return headerValue, nil
+}
+
+// The end result should be a base64 encoded DER certificate.
+// URL is for converting urlencoded strings back into text
+func urlDecodeHeader(headerValue string) (string, error) {
+	decoded, err := url.QueryUnescape(headerValue)
+	if err != nil {
+		return "", errors.New("error url decoding client certificate header")
+	}
+	return decoded, nil
+}
+
+func pemDecodeHeader(headerValue string) (string, error) {
+	block, _ := pem.Decode([]byte(headerValue))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", errors.New("failed to decode PEM certificate")
+	}
+	// This is later validated in handleCertHeader in http/logical.go as part of buildLogicalRequestNoAuth
+	return base64.StdEncoding.EncodeToString(block.Bytes), nil
 }

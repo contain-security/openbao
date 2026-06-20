@@ -1,10 +1,8 @@
 package kv
 
 import (
-	"context"
 	"fmt"
 	"reflect"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,9 +12,9 @@ import (
 )
 
 func TestVersionedKV_Upgrade(t *testing.T) {
-	b, storage := testPassthroughBackendWithStorage()
+	b, storage := testPassthroughBackendWithStorage(t.Context())
 
-	for i := 0; i < 1024*1024; i++ {
+	for i := range 1024 * 1024 {
 		data := map[string]interface{}{
 			"bar": i,
 		}
@@ -28,7 +26,7 @@ func TestVersionedKV_Upgrade(t *testing.T) {
 			Data:      data,
 		}
 
-		resp, err := b.HandleRequest(context.Background(), req)
+		resp, err := b.HandleRequest(t.Context(), req)
 		if err != nil || (resp != nil && resp.IsError()) {
 			t.Fatalf("err:%s resp:%#v\n", err, resp)
 		}
@@ -46,7 +44,7 @@ func TestVersionedKV_Upgrade(t *testing.T) {
 	}
 
 	var err error
-	b, err = Factory(context.Background(), config)
+	b, err = Factory(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,21 +56,17 @@ func TestVersionedKV_Upgrade(t *testing.T) {
 		Storage:   storage,
 	}
 
-	resp, err := b.HandleRequest(context.Background(), req)
+	resp, err := b.HandleRequest(t.Context(), req)
 	if resp == nil || resp.Error().Error() != "Upgrading from non-versioned to versioned data. This backend will be unavailable for a brief period and will resume service shortly." {
 		t.Fatalf("err:%s resp:%#v\n", err, resp)
 	}
 
 	// wait for upgrade to finish
-	for {
-		if atomic.LoadUint32(b.(*versionedKVBackend).upgrading) == 0 {
-			break
-		}
-
+	for b.(*versionedKVBackend).upgrading.Load() {
 		time.Sleep(time.Second)
 	}
 
-	for i := 0; i < 1024*1024; i++ {
+	for i := range 1024 * 1024 {
 		data := map[string]interface{}{
 			"bar": float64(i),
 		}
@@ -83,7 +77,7 @@ func TestVersionedKV_Upgrade(t *testing.T) {
 			Storage:   storage,
 		}
 
-		resp, err := b.HandleRequest(context.Background(), req)
+		resp, err := b.HandleRequest(t.Context(), req)
 		if err != nil || (resp != nil && resp.IsError()) {
 			t.Fatalf("err:%s resp:%#v\n", err, resp)
 		}

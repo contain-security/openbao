@@ -1,24 +1,19 @@
-# Determine this makefile's path.
+# Determine this Makefile's path.
 # Be sure to place this BEFORE `include` directives, if any.
 THIS_FILE := $(lastword $(MAKEFILE_LIST))
 
-GO_CMD?=go
 DOCKER_CMD?=docker
 
-TEST?=$$($(GO_CMD) list ./... github.com/openbao/openbao/api/v2/... github.com/openbao/openbao/sdk/v2/... | grep -v /vendor/ | grep -v /integ)
+TEST?=$$(go list ./... github.com/openbao/openbao/api/v2/... github.com/openbao/openbao/sdk/v2/... | grep -v /vendor/ | grep -v /integ)
 TEST_TIMEOUT?=45m
 EXTENDED_TEST_TIMEOUT=60m
 INTEG_TEST_TIMEOUT=120m
-GO_MODS?=$$(find . -name 'go.mod' | xargs -L 1 dirname)
+GO_MODS?=$$(find . -name go.mod -not -path ./tools/go.mod | xargs -L 1 dirname)
 SED?=$(shell command -v gsed || command -v sed)
 
 GO_VERSION_MIN=$$(cat $(CURDIR)/.go-version)
-PROTOC_VERSION_MIN=31.1
+PROTOC_VERSION=34.0
 CGO_ENABLED?=0
-ifneq ($(FDB_ENABLED), )
-	CGO_ENABLED=1
-	BUILD_TAGS+=foundationdb
-endif
 
 default: dev
 
@@ -31,13 +26,10 @@ bin-plugin: prep
 
 # dev creates binaries for testing OpenBao locally. These are put
 # into ./bin/ as well as $GOPATH/bin
-dev: BUILD_TAGS+=testonly
 dev: prep
 	@CGO_ENABLED=$(CGO_ENABLED) BUILD_TAGS='$(BUILD_TAGS)' OPENBAO_DEV_BUILD=1 sh -c "'$(CURDIR)/scripts/build.sh'"
-dev-ui: BUILD_TAGS+=testonly
 dev-ui: assetcheck prep
 	@CGO_ENABLED=$(CGO_ENABLED) BUILD_TAGS='$(BUILD_TAGS) ui' OPENBAO_DEV_BUILD=1 sh -c "'$(CURDIR)/scripts/build.sh'"
-dev-dynamic: BUILD_TAGS+=testonly
 dev-dynamic: prep
 	@CGO_ENABLED=1 BUILD_TAGS='$(BUILD_TAGS)' OPENBAO_DEV_BUILD=1 sh -c "'$(CURDIR)/scripts/build.sh'"
 
@@ -51,50 +43,47 @@ dev-ui-mem: assetcheck dev-ui
 dev-dynamic-mem: BUILD_TAGS+=memprofiler
 dev-dynamic-mem: dev-dynamic
 
+dev-tlsdebug: BUILD_TAGS+=tlsdebug
+dev-tlsdebug: dev
+
 # Creates a Docker image by adding the compiled linux/amd64 binary found in ./bin.
 # The resulting image is tagged "openbao:dev".
-docker-dev: BUILD_TAGS+=testonly
 docker-dev: prep
 	$(DOCKER_CMD) build --build-arg VERSION=$(GO_VERSION_MIN) --build-arg BUILD_TAGS="$(BUILD_TAGS)" -f scripts/docker/Dockerfile -t openbao:dev .
 
-docker-dev-ui: BUILD_TAGS+=testonly
 docker-dev-ui: prep
 	$(DOCKER_CMD) build --build-arg VERSION=$(GO_VERSION_MIN) --build-arg BUILD_TAGS="$(BUILD_TAGS)" -f scripts/docker/Dockerfile.ui -t openbao:dev-ui .
 
 # test runs the unit tests and vets the code
-test: BUILD_TAGS+=testonly
 test: prep
 	@CGO_ENABLED=$(CGO_ENABLED) \
 	BAO_ADDR= \
 	BAO_TOKEN= \
 	BAO_DEV_ROOT_TOKEN_ID= \
 	BAO_ACC= \
-	$(GO_CMD) test -tags='$(BUILD_TAGS)' $(TEST) $(TESTARGS) -timeout=$(TEST_TIMEOUT) -parallel=20
+	go test -tags='$(BUILD_TAGS)' $(TEST) $(TESTARGS) -timeout=$(TEST_TIMEOUT) -parallel=20
 
-testcompile: BUILD_TAGS+=testonly
 testcompile: prep
 	@for pkg in $(TEST) ; do \
-		$(GO_CMD) test -v -c -tags='$(BUILD_TAGS)' $$pkg -parallel=4 ; \
+		go test -v -c -tags='$(BUILD_TAGS)' $$pkg -parallel=4 ; \
 	done
 
 # testacc runs acceptance tests
-testacc: BUILD_TAGS+=testonly
 testacc: prep
 	@if [ "$(TEST)" = "./..." ]; then \
 		echo "ERROR: Set TEST to a specific package"; \
 		exit 1; \
 	fi
-	BAO_ACC=1 $(GO_CMD) test -tags='$(BUILD_TAGS)' $(TEST) -v $(TESTARGS) -timeout=$(EXTENDED_TEST_TIMEOUT)
+	BAO_ACC=1 go test -tags='$(BUILD_TAGS)' $(TEST) -v $(TESTARGS) -timeout=$(EXTENDED_TEST_TIMEOUT)
 
 # testrace runs the race checker
-testrace: BUILD_TAGS+=testonly
 testrace: prep
 	@CGO_ENABLED=1 \
 	BAO_ADDR= \
 	BAO_TOKEN= \
 	BAO_DEV_ROOT_TOKEN_ID= \
 	BAO_ACC= \
-	$(GO_CMD) test -tags='$(BUILD_TAGS)' -race $(TEST) $(TESTARGS) -timeout=$(EXTENDED_TEST_TIMEOUT) -parallel=20
+	go test -tags='$(BUILD_TAGS)' -race $(TEST) $(TESTARGS) -timeout=$(EXTENDED_TEST_TIMEOUT) -parallel=20
 
 cover:
 	./scripts/coverage.sh --html
@@ -104,7 +93,7 @@ cover:
 .PHONY: vet
 vet:
 	@for dir in $(GO_MODS); do \
-		cd $$dir && $(GO_CMD) vet ./...; if [ $$? -eq 1 ]; then \
+		cd $$dir && go vet ./...; if [ $$? -eq 1 ]; then \
 			echo ""; \
 			echo "Vet found suspicious constructs. Please check the reported constructs"; \
 			echo "and fix them if necessary before submitting the code for reviewal."; \
@@ -127,7 +116,7 @@ lint-new: lint
 .PHONY: lint
 lint:
 	@for dir in $(GO_MODS); do \
-		cd $$dir && golangci-lint run $(LINT_FLAGS); if [ $$? -eq 1 ]; then \
+		cd $$dir && go tool -modfile=$(realpath tools/go.mod) golangci-lint run $(LINT_FLAGS); if [ $$? -eq 1 ]; then \
 			echo ""; \
 			echo "Lint found suspicious constructs. Please check the reported constructs"; \
 			echo "and fix them if necessary before submitting the code for reviewal."; \
@@ -135,43 +124,32 @@ lint:
 		cd $(CURDIR); \
 	done
 
-# prep runs `go generate` to build the dynamically generated
-# source files.
-#
 # n.b.: prep used to depend on fmtcheck, but since fmtcheck is
 # now run as a pre-commit hook (and there's little value in
 # making every build run the formatter), we've removed that
 # dependency.
 prep:
-	@sh -c "'$(CURDIR)/scripts/goversioncheck.sh' '$(GO_VERSION_MIN)'"
-	@GOARCH= GOOS= $(GO_CMD) generate $$($(GO_CMD) list ./... | grep -v /vendor/)
-	@GOARCH= GOOS= $(GO_CMD) generate $$($(GO_CMD) list github.com/openbao/openbao/api/v2/... | grep -v /vendor/)
-	@GOARCH= GOOS= $(GO_CMD) generate $$($(GO_CMD) list github.com/openbao/openbao/sdk/v2/... | grep -v /vendor/)
 	@if [ -d .git/hooks ]; then cp .hooks/* .git/hooks/; fi
 
 # bootstrap the build by downloading additional tools that may be used by devs
+#
+# Grep for tools that include a "." to select only those defined in tools/go.mod
+# and exclude standard ones.
 bootstrap:
-	go generate -tags tools tools/tools.go
-
-# Note: if you have plugins in GOPATH you can update all of them via something like:
-# for i in $(ls | grep openbao-plugin-); do cd $i; git remote update; git reset --hard origin/master; dep ensure -update; git add .; git commit; git push; cd ..; done
-update-plugins:
-	grep openbao-plugin- go.mod | cut -d ' ' -f 1 | while read -r P; do echo "Updating $P..."; go get -v "$P"; done
+	@for tool in $$(go tool -modfile=tools/go.mod | grep \\.); do \
+		go install -modfile=tools/go.mod "$$tool"; \
+	done
 
 static-assets-dir:
 	@mkdir -p ./http/web_ui
 
 install-ui-dependencies:
 	@echo "--> Installing JavaScript assets"
-	@cd ui && yarn
+	@cd ui && pnpm install
 
 test-ember: install-ui-dependencies
 	@echo "--> Running ember tests"
-	@cd ui && yarn run test:oss
-
-test-ember-enos: install-ui-dependencies
-	@echo "--> Running ember tests with a real backend"
-	@cd ui && yarn run test:enos
+	@cd ui && pnpm test
 
 check-openbao-in-path:
 	@OPENBAO_BIN=$$(command -v bao) || { echo "bao command not found"; exit 1; }; \
@@ -179,24 +157,22 @@ check-openbao-in-path:
 		printf "Using OpenBao at %s:\n\$$ openbao version\n%s\n" "$$OPENBAO_BIN" "$$(bao version)"
 
 ember-dist: install-ui-dependencies
-	@cd ui && npm rebuild node-sass
 	@echo "--> Building Ember application"
-	@cd ui && yarn run build
+	@cd ui && pnpm build
 	@rm -rf ui/if-you-need-to-delete-this-open-an-issue-async-disk-cache
 
 ember-dist-dev: install-ui-dependencies
-	@cd ui && npm rebuild node-sass
 	@echo "--> Building Ember application"
-	@cd ui && yarn run build:dev
+	@cd ui && pnpm build:dev
 
 static-dist: ember-dist
 static-dist-dev: ember-dist-dev
 
 proto: bootstrap
-	@sh -c "'$(CURDIR)/scripts/protocversioncheck.sh' '$(PROTOC_VERSION_MIN)'"
+	@sh -c "'$(CURDIR)/scripts/protocversioncheck.sh' '$(PROTOC_VERSION)'"
 	protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative builtin/logical/kv/*.proto
 	protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative builtin/logical/pki/*.proto
-	protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative vault/*.proto
+	protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative vault/forwarding/*.proto
 	protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative helper/storagepacker/types.proto
 	protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative helper/forwarding/types.proto
 	protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative sdk/logical/*.proto
@@ -213,22 +189,16 @@ proto: bootstrap
 	# No additional sed expressions should be added to this list. Going forward
 	# we should just use the variable names chosen by protobuf. These are left
 	# here for backwards compatibility, namely for SDK compilation.
-	$(SED) -i -e 's/Id/ID/' -e 's/SPDX-License-IDentifier/SPDX-License-Identifier/' vault/request_forwarding_service.pb.go
+	$(SED) -i -e 's/Id/ID/' -e 's/SPDX-License-IDentifier/SPDX-License-Identifier/' vault/forwarding/request_forwarding_service.pb.go
 	$(SED) -i -e 's/Idp/IDP/' -e 's/Url/URL/' -e 's/Id/ID/' -e 's/IDentity/Identity/' -e 's/EntityId/EntityID/' -e 's/Api/API/' -e 's/Qr/QR/' -e 's/Totp/TOTP/' -e 's/Mfa/MFA/' -e 's/Pingid/PingID/' -e 's/namespaceId/namespaceID/' -e 's/Ttl/TTL/' -e 's/BoundCidrs/BoundCIDRs/' -e 's/SPDX-License-IDentifier/SPDX-License-Identifier/' helper/identity/types.pb.go helper/identity/mfa/types.pb.go helper/storagepacker/types.pb.go sdk/plugin/pb/backend.pb.go sdk/logical/identity.pb.go
 
-	# This will inject the sentinel struct tags as decorated in the proto files.
-	protoc-go-inject-tag -input=./helper/identity/types.pb.go
-	protoc-go-inject-tag -input=./helper/identity/mfa/types.pb.go
-
 .PHONY: fmtcheck
-fmtcheck: LINT_FLAGS+="-c=$(CURDIR)/.golangci.fmt.yml"
-fmtcheck: lint
+fmtcheck:
+	./scripts/gofmtcheck.sh
 
 .PHONY: fmt
 fmt:
-	@for dir in $(GO_MODS); do \
-		cd $$dir; golangci-lint fmt; cd $(CURDIR); \
-	done
+	go tool -modfile=tools/go.mod gofumpt -w .
 
 semgrep:
 	semgrep --include '*.go' -a -f tools/semgrep .
@@ -248,33 +218,24 @@ assetcheck:
 
 spellcheck:
 	@echo "==> Spell checking website..."
-	$(GO_CMD) run github.com/golangci/misspell/cmd/misspell@latest -w -source=text website/content
+	go tool -modfile=tools/go.mod misspell -w -source=text website/content
 
 mysql-database-plugin:
-	@CGO_ENABLED=0 $(GO_CMD) build -o bin/mysql-database-plugin ./plugins/database/mysql/mysql-database-plugin
+	@CGO_ENABLED=0 go build -o bin/mysql-database-plugin ./plugins/database/mysql/mysql-database-plugin
 
 mysql-legacy-database-plugin:
-	@CGO_ENABLED=0 $(GO_CMD) build -o bin/mysql-legacy-database-plugin ./plugins/database/mysql/mysql-legacy-database-plugin
+	@CGO_ENABLED=0 go build -o bin/mysql-legacy-database-plugin ./plugins/database/mysql/mysql-legacy-database-plugin
 
 cassandra-database-plugin:
-	@CGO_ENABLED=0 $(GO_CMD) build -o bin/cassandra-database-plugin ./plugins/database/cassandra/cassandra-database-plugin
+	@CGO_ENABLED=0 go build -o bin/cassandra-database-plugin ./plugins/database/cassandra/cassandra-database-plugin
 
 influxdb-database-plugin:
-	@CGO_ENABLED=0 $(GO_CMD) build -o bin/influxdb-database-plugin ./plugins/database/influxdb/influxdb-database-plugin
+	@CGO_ENABLED=0 go build -o bin/influxdb-database-plugin ./plugins/database/influxdb/influxdb-database-plugin
 
 postgresql-database-plugin:
-	@CGO_ENABLED=0 $(GO_CMD) build -o bin/postgresql-database-plugin ./plugins/database/postgresql/postgresql-database-plugin
+	@CGO_ENABLED=0 go build -o bin/postgresql-database-plugin ./plugins/database/postgresql/postgresql-database-plugin
 
-mssql-database-plugin:
-	@CGO_ENABLED=0 $(GO_CMD) build -o bin/mssql-database-plugin ./plugins/database/mssql/mssql-database-plugin
-
-hana-database-plugin:
-	@CGO_ENABLED=0 $(GO_CMD) build -o bin/hana-database-plugin ./plugins/database/hana/hana-database-plugin
-
-mongodb-database-plugin:
-	@CGO_ENABLED=0 $(GO_CMD) build -o bin/mongodb-database-plugin ./plugins/database/mongodb/mongodb-database-plugin
-
-.PHONY: bin default prep test vet bootstrap ci-bootstrap fmt fmtcheck mysql-database-plugin mysql-legacy-database-plugin cassandra-database-plugin influxdb-database-plugin postgresql-database-plugin mssql-database-plugin hana-database-plugin mongodb-database-plugin ember-dist ember-dist-dev static-dist static-dist-dev assetcheck check-openbao-in-path packages build build-ci semgrep semgrep-ci vet-godoctests ci-vet-godoctests
+.PHONY: bin default prep test vet bootstrap fmt fmtcheck mysql-database-plugin mysql-legacy-database-plugin cassandra-database-plugin influxdb-database-plugin postgresql-database-plugin ember-dist ember-dist-dev static-dist static-dist-dev assetcheck check-openbao-in-path packages build build-ci semgrep semgrep-ci vet-godoctests ci-vet-godoctests
 
 .NOTPARALLEL: ember-dist ember-dist-dev
 
@@ -284,53 +245,31 @@ openapi: dev
 
 .PHONY: vulncheck
 vulncheck:
-	$(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@latest -show verbose ./...
-	$(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@latest -show verbose github.com/openbao/openbao/api/v2/...
-	$(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@latest -show verbose github.com/openbao/openbao/sdk/v2/...
+	go tool -modfile=tools/go.mod govulncheck -show verbose ./...
+	go tool -modfile=tools/go.mod govulncheck -show verbose github.com/openbao/openbao/api/v2/...
+	go tool -modfile=tools/go.mod govulncheck -show verbose github.com/openbao/openbao/sdk/v2/...
 
 .PHONY: tidy-all
 tidy-all:
-	cd api && $(GO_CMD) mod tidy
-	cd api/auth/approle && $(GO_CMD) mod tidy
-	cd api/auth/kubernetes && $(GO_CMD) mod tidy
-	cd api/auth/ldap && $(GO_CMD) mod tidy
-	cd api/auth/userpass && $(GO_CMD) mod tidy
-	cd sdk && $(GO_CMD) mod tidy
-	$(GO_CMD) mod tidy
+	find . -name 'go.mod' -execdir go mod tidy \;
 
 .PHONY: ci-tidy-all
 ci-tidy-all:
 	git diff --quiet
-	cd api && $(GO_CMD) mod tidy
-	cd api/auth/approle && $(GO_CMD) mod tidy
-	cd api/auth/kubernetes && $(GO_CMD) mod tidy
-	cd api/auth/ldap && $(GO_CMD) mod tidy
-	cd api/auth/userpass && $(GO_CMD) mod tidy
-	cd sdk && $(GO_CMD) mod tidy
-	$(GO_CMD) mod tidy
+	find . -name 'go.mod' -execdir go mod tidy \;
 	git diff --quiet || (echo -e "\n\nModified files:" && git status --short && echo -e "\n\nRun 'make tidy-all' locally and commit the changes.\n" && exit 1)
 
 .PHONY: release-changelog
 release-changelog: $(wildcard changelog/*.txt)
 	@:$(if $(LAST_RELEASE),,$(error please set the LAST_RELEASE environment variable for changelog generation))
 	@:$(if $(THIS_RELEASE),,$(error please set the THIS_RELEASE environment variable for changelog generation))
-	changelog-build -changelog-template changelog/changelog.tmpl -entries-dir changelog -git-dir . -note-template changelog/note.tmpl -last-release $(LAST_RELEASE) -this-release $(THIS_RELEASE)
-
-.PHONY: dev-gorelease
-dev-gorelease: export GORELEASER_PREVIOUS_TAG := $(shell git describe --tags --exclude "api/*" --exclude "sdk/*" --abbrev=0)
-dev-gorelease: export GORELEASER_CURRENT_TAG := $(shell git describe --tags --exclude "api/*" --exclude "sdk/*" )
-dev-gorelease: export GPG_KEY_FILE := /dev/null
-dev-gorelease:
-	@echo GORELEASER_CURRENT_TAG: $(GORELEASER_CURRENT_TAG)
-	@$(SED) 's/REPLACE_WITH_RELEASE_GOOS/linux/g' $(CURDIR)/.goreleaser-template.yaml > $(CURDIR)/.goreleaser.yaml
-	@$(SED) -i 's/^#LINUXONLY#//g' $(CURDIR)/.goreleaser.yaml
-	@$(GO_CMD) run github.com/goreleaser/goreleaser/v2@latest release --clean --timeout=60m --verbose --parallelism 2 --snapshot --skip docker,sbom,sign
+	go tool -modfile=tools/go.mod changelog-build -changelog-template changelog/changelog.tmpl -entries-dir changelog -git-dir . -note-template changelog/note.tmpl -last-release $(LAST_RELEASE) -this-release $(THIS_RELEASE)
 
 .PHONY: goreleaser-check
 goreleaser-check:
-	$(GO_CMD) run github.com/goreleaser/goreleaser/v2@v2.5.1 check -f goreleaser.hsm.yaml
-	$(GO_CMD) run github.com/goreleaser/goreleaser/v2@v2.5.1 check -f goreleaser.linux.yaml
-	$(GO_CMD) run github.com/goreleaser/goreleaser/v2@v2.5.1 check -f goreleaser.other.yaml
+	goreleaser check -f goreleaser.hsm.yaml
+	goreleaser check -f goreleaser.linux.yaml
+	goreleaser check -f goreleaser.other.yaml
 
 .PHONY: sync-deps
 sync-deps:
@@ -345,7 +284,7 @@ bump-critical:
 	go get github.com/golang-jwt/jwt/v4@latest
 	go get github.com/golang-jwt/jwt/v5@latest
 	go get github.com/ProtonMail/go-crypto@latest
-	go get github.com/go-jose/go-jose/v3@latest
+	go get github.com/go-jose/go-jose/v4@latest
 	go get github.com/caddyserver/certmagic@latest
 	go get github.com/mholt/acmez/v3@latest
 	go get github.com/google/cel-go@latest
@@ -353,10 +292,12 @@ bump-critical:
 	go get github.com/hashicorp/cap@latest
 	go get github.com/hashicorp/raft@latest
 	go get github.com/tink-crypto/tink-go/v2@latest
+	go get github.com/pquerna/otp@latest
 	go get go.etcd.io/bbolt@latest
 	go get google.golang.org/grpc@latest
 	grep -o 'golang.org/x/[^ ]*' ./go.mod  | xargs -I{} go get '{}@latest'
 	grep -o 'github.com/hashicorp/go-secure-stdlib/[^ ]*' ./go.mod  | xargs -I{} go get '{}@latest'
+	grep -o 'github.com/openbao/go-kms-wrapping/[^ ]*' ./go.mod  | xargs -I{} go get '{}@latest'
 	make sync-deps
 
 .PHONY: tag-api
@@ -365,14 +306,21 @@ tag-api:
 	@:$(if $(ORIGIN),,$(error please set the ORIGIN environment variable for pushing API tags))
 	git tag api/$(THIS_RELEASE)
 	git tag api/auth/approle/$(THIS_RELEASE)
+	git tag api/auth/jwt/$(THIS_RELEASE)
 	git tag api/auth/kubernetes/$(THIS_RELEASE)
 	git tag api/auth/ldap/$(THIS_RELEASE)
 	git tag api/auth/userpass/$(THIS_RELEASE)
 	git push $(ORIGIN) api/$(THIS_RELEASE)
 	git push $(ORIGIN) api/auth/approle/$(THIS_RELEASE)
+	git push $(ORIGIN) api/auth/jwt/$(THIS_RELEASE)
 	git push $(ORIGIN) api/auth/kubernetes/$(THIS_RELEASE)
 	git push $(ORIGIN) api/auth/ldap/$(THIS_RELEASE)
 	git push $(ORIGIN) api/auth/userpass/$(THIS_RELEASE)
+
+.PHONY: sync-deps-gkw
+sync-deps-gkw:
+	@:$(if $(GO_KMS_WRAPPING),,$(error please set the GO_KMS_WRAPPING environment variable to the go-kms-wrapping repository to update))
+	sh -c "'$(CURDIR)/scripts/sync-deps-gkw.sh'"
 
 .PHONY: tag-sdk
 tag-sdk:

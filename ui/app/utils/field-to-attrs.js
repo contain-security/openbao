@@ -51,12 +51,13 @@ export const expandAttributeMeta = function (modelClass, attributeNames) {
     // populate cache if empty
     if (!modelAttrs[klass.modelName]) {
       modelAttrs[klass.modelName] = [];
+      // TODO: we can't use eachAttribute on the class itself
       klass.eachAttribute((name, meta) => {
         modelAttrs[klass.modelName].push(meta);
       });
     }
     // lookup attr and return meta
-    return modelAttrs[klass.modelName].findBy('name', attrKey);
+    return modelAttrs[klass.modelName].find((x) => x.name === attrKey);
   };
 
   return fields.map((field) => {

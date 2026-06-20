@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/openbao/openbao/sdk/v2/helper/jsonutil"
@@ -19,12 +18,8 @@ import (
 )
 
 const (
-	shared                   = false
-	exclusive                = true
 	currentConvergentVersion = 3
 )
-
-var errNeedExclusiveLock = errors.New("an exclusive lock is needed for this operation")
 
 // PolicyRequest holds values used when requesting a policy. Most values are
 // only used during an upsert.
@@ -269,7 +264,7 @@ func (lm *LockManager) BackupPolicy(ctx context.Context, storage logical.Storage
 		}
 	}
 
-	if atomic.LoadUint32(&p.deleted) == 1 {
+	if p.deleted.Load() {
 		return "", fmt.Errorf("key %q not found", name)
 	}
 
@@ -281,9 +276,22 @@ func (lm *LockManager) BackupPolicy(ctx context.Context, storage logical.Storage
 	return backup, nil
 }
 
-// When the function returns, if caching was disabled, the Policy's lock must
-// be unlocked when the caller is done (and it should not be re-locked).
+// The Policy's lock must be unlocked when the caller is done (and it should
+// not be re-locked). This will usually be a read lock but may be exclusive
+// in certain circumstances, such as when upserted.
 func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest, rand io.Reader) (retP *Policy, retUpserted bool, retErr error) {
+	return lm.GetPolicyWithLockType(ctx, req, rand, false /* not exclusive */)
+}
+
+// The Policy's lock must be unlocked when the caller is done (and it should
+// not be re-locked). This will definitely be an exclusive lock.
+func (lm *LockManager) GetPolicyExclusive(ctx context.Context, req PolicyRequest, rand io.Reader) (retP *Policy, retUpserted bool, retErr error) {
+	return lm.GetPolicyWithLockType(ctx, req, rand, true /* exclusive */)
+}
+
+// The Policy must be unlocked when done. See note about GetPolicy for when
+// exclusive=false.
+func (lm *LockManager) GetPolicyWithLockType(ctx context.Context, req PolicyRequest, rand io.Reader, exclusive bool) (retP *Policy, retUpserted bool, retErr error) {
 	var p *Policy
 	var err error
 	var ok bool
@@ -295,9 +303,10 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest, rand io
 	}
 	if ok {
 		p = pRaw.(*Policy)
-		if atomic.LoadUint32(&p.deleted) == 1 {
+		if p.deleted.Load() {
 			return nil, false, nil
 		}
+		p.Lock(exclusive)
 		return p, false, nil
 	}
 
@@ -309,20 +318,19 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest, rand io
 
 	// If we are using the cache, defer the lock unlock; otherwise we will
 	// return from here with the lock still held.
-	cleanup := func() {
+	defer func() {
 		switch {
-		// If using the cache we always unlock, the caller locks the policy
-		// themselves
-		case lm.useCache:
-			lock.Unlock()
-
-		// If not using the cache, if we aren't returning a policy the caller
-		// doesn't have a lock, so we must unlock
 		case retP == nil:
+			// If not using the cache and if we aren't returning a policy, the
+			// caller doesn't have a lock reference, so we must unlock.
+			lock.Unlock()
+		case lm.useCache:
+			// If using the cache, we always unlock the global lock, but before
+			// doing so, we acquire a lock on the policy itself.
+			retP.Lock(exclusive)
 			lock.Unlock()
 		}
-	}
-	defer cleanup()
+	}()
 
 	// Check the cache again
 	if lm.useCache {
@@ -330,11 +338,11 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest, rand io
 	}
 	if ok {
 		p = pRaw.(*Policy)
-		if atomic.LoadUint32(&p.deleted) == 1 {
+		if p.deleted.Load() {
 			return nil, false, nil
 		}
 		retP = p
-		return
+		return retP, retUpserted, retErr
 	}
 
 	// Load it from storage
@@ -375,7 +383,6 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest, rand io
 
 		case KeyType_RSA2048, KeyType_RSA3072, KeyType_RSA4096:
 			if req.Derived || req.Convergent {
-				cleanup()
 				return nil, false, fmt.Errorf("key derivation and convergent encryption not supported for keys of type %v", req.KeyType)
 			}
 		case KeyType_HMAC:
@@ -427,7 +434,7 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest, rand io
 		// We don't need to worry about upgrading since it will be a new policy
 		retP = p
 		retUpserted = true
-		return
+		return retP, retUpserted, retErr
 	}
 
 	if p.NeedsUpgrade() {
@@ -444,7 +451,7 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest, rand io
 	}
 
 	retP = p
-	return
+	return retP, retUpserted, retErr
 }
 
 func (lm *LockManager) ImportPolicy(ctx context.Context, req PolicyRequest, key []byte, rand io.Reader) error {
@@ -459,7 +466,7 @@ func (lm *LockManager) ImportPolicy(ctx context.Context, req PolicyRequest, key 
 	}
 	if ok {
 		p = pRaw.(*Policy)
-		if atomic.LoadUint32(&p.deleted) == 1 {
+		if p.deleted.Load() {
 			return nil
 		}
 	}
@@ -539,7 +546,7 @@ func (lm *LockManager) DeletePolicy(ctx context.Context, storage logical.Storage
 		return errors.New("deletion is not allowed for this key")
 	}
 
-	atomic.StoreUint32(&p.deleted, 1)
+	p.deleted.Store(true)
 
 	if lm.useCache {
 		lm.cache.Delete(name)

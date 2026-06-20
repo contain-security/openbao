@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/cap/oidc"
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
-	"github.com/patrickmn/go-cache"
+	"zgo.at/zcache/v2"
 )
 
 const (
@@ -41,7 +41,7 @@ type jwtAuthBackend struct {
 	provider     *oidc.Provider
 	validator    *jwt.Validator
 	cachedConfig *jwtConfig
-	oidcRequests *cache.Cache
+	oidcRequests *zcache.Cache[string, *oidcRequest]
 
 	providerCtx       context.Context
 	providerCtxCancel context.CancelFunc
@@ -50,7 +50,7 @@ type jwtAuthBackend struct {
 func backend() *jwtAuthBackend {
 	b := new(jwtAuthBackend)
 	b.providerCtx, b.providerCtxCancel = context.WithCancel(context.Background())
-	b.oidcRequests = cache.New(oidcRequestTimeout, oidcRequestCleanupInterval)
+	b.oidcRequests = zcache.New[string, *oidcRequest](oidcRequestTimeout, oidcRequestCleanupInterval)
 
 	b.Backend = &framework.Backend{
 		AuthRenew:   b.pathLoginRenew,
@@ -157,8 +157,14 @@ func (b *jwtAuthBackend) jwtValidator(config *jwtConfig) (*jwt.Validator, error)
 		keySet, err = jwt.NewJSONWebKeySet(b.providerCtx, config.JWKSURL, config.JWKSCAPEM)
 	case StaticKeys:
 		keySet, err = jwt.NewStaticKeySet(config.ParsedJWTPubKeys)
-	case OIDCDiscovery:
+	case OIDCDiscovery, OIDCFlow:
 		keySet, err = jwt.NewOIDCDiscoveryKeySet(b.providerCtx, config.OIDCDiscoveryURL, config.OIDCDiscoveryCAPEM)
+	case CustomProviderDiscovery:
+		pConfig, initErr := NewProviderConfig(b.providerCtx, config, ProviderMap())
+		if initErr != nil {
+			return nil, initErr
+		}
+		keySet, err = pConfig.(KeySetDiscovery).NewKeySet(b.providerCtx)
 	default:
 		return nil, errors.New("unsupported config type")
 	}

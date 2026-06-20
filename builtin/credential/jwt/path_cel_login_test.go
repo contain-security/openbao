@@ -4,12 +4,11 @@
 package jwtauth
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
 
-	sqjwt "github.com/go-jose/go-jose/v3/jwt"
+	sqjwt "github.com/go-jose/go-jose/v4/jwt"
 	celhelper "github.com/openbao/openbao/sdk/v2/helper/cel"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/openbao/openbao/sdk/v2/plugin/pb"
@@ -28,7 +27,7 @@ func Test_runCelProgram(t *testing.T) {
 		{
 			name: "Boolean false will return error",
 			celRole: celRoleEntry{
-				CelProgram: celhelper.CelProgram{
+				Program: &celhelper.Program{
 					Expression: "1 == 2",
 				},
 			},
@@ -45,7 +44,7 @@ func Test_runCelProgram(t *testing.T) {
 		{
 			name: "String will be returned as error",
 			celRole: celRoleEntry{
-				CelProgram: celhelper.CelProgram{
+				Program: &celhelper.Program{
 					Expression: "'something is amiss'",
 				},
 			},
@@ -63,7 +62,7 @@ func Test_runCelProgram(t *testing.T) {
 		{
 			name: "pb.Auth type can be returned",
 			celRole: celRoleEntry{
-				CelProgram: celhelper.CelProgram{
+				Program: &celhelper.Program{
 					Expression: `pb.Auth{display_name: 'newAuth'}`,
 				},
 			},
@@ -81,7 +80,7 @@ func Test_runCelProgram(t *testing.T) {
 		{
 			name: "pb.Auth can have policies to the resulting role",
 			celRole: celRoleEntry{
-				CelProgram: celhelper.CelProgram{
+				Program: &celhelper.Program{
 					Expression: `pb.Auth{policies: ['policy1', 'policy2']}`,
 				},
 			},
@@ -99,7 +98,7 @@ func Test_runCelProgram(t *testing.T) {
 		{
 			name: "pb.Auth BoundCIDRs will add some CIDRs to the resulting role",
 			celRole: celRoleEntry{
-				CelProgram: celhelper.CelProgram{
+				Program: &celhelper.Program{
 					Expression: `claims.sub == 'test@example.com'
 					? pb.Auth{bound_cidrs: ['192.168.1.0/24', '10.0.1.1/31']}
 					: false`,
@@ -120,8 +119,8 @@ func Test_runCelProgram(t *testing.T) {
 		{
 			name: "Cel variables can be used in the expression",
 			celRole: celRoleEntry{
-				CelProgram: celhelper.CelProgram{
-					Variables: []celhelper.CelVariable{
+				Program: &celhelper.Program{
+					Variables: []celhelper.Variable{
 						{Name: "is_admin", Expression: "claims.sub == 'test@example.com'"},
 					},
 					Expression: `is_admin
@@ -145,8 +144,8 @@ func Test_runCelProgram(t *testing.T) {
 			name: "pb.Auth proto message is validated",
 			celRole: celRoleEntry{
 				Name: "celRole",
-				CelProgram: celhelper.CelProgram{
-					Variables: []celhelper.CelVariable{
+				Program: &celhelper.Program{
+					Variables: []celhelper.Variable{
 						{Name: "is_admin", Expression: "claims.sub == 'test@example.com'"},
 					},
 					Expression: `is_admin
@@ -173,7 +172,7 @@ func Test_runCelProgram(t *testing.T) {
 			if !ok {
 				t.Fatalf("Expected jwtAuthBackend, got %T", logicalBackend)
 			}
-			role, err := b.runCelProgram(context.Background(), &tc.celRole, tc.claims)
+			role, err := b.runCelProgram(t.Context(), logical.UpdateOperation, &tc.celRole, tc.claims)
 			if tc.validateResult != nil {
 				tc.validateResult(t, err, role)
 			}
@@ -273,7 +272,7 @@ func TestCelRoleAuth(t *testing.T) {
 				Data:      tt.celRole,
 			}
 
-			resp, err := b.HandleRequest(context.Background(), req)
+			resp, err := b.HandleRequest(t.Context(), req)
 			if err != nil || (resp != nil && resp.IsError()) {
 				t.Fatalf("err:%s resp:%#v\n", err, resp)
 			}
@@ -304,7 +303,7 @@ func TestCelRoleAuth(t *testing.T) {
 				},
 			}
 
-			resp, err = b.HandleRequest(context.Background(), loginReq)
+			resp, err = b.HandleRequest(t.Context(), loginReq)
 			if tt.wantErr {
 				if !resp.IsError() {
 					t.Fatalf("expected error: %v / %v via JWT: %v", resp, resp.Auth, jwtData)

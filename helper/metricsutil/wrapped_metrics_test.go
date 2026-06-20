@@ -4,19 +4,15 @@
 package metricsutil
 
 import (
+	"slices"
 	"testing"
 	"time"
 
-	"github.com/armon/go-metrics"
+	metrics "github.com/hashicorp/go-metrics/compat"
 )
 
 func isLabelPresent(toFind Label, ls []Label) bool {
-	for _, l := range ls {
-		if l == toFind {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ls, toFind)
 }
 
 // We can use a sink directly, or wrap the top-level
@@ -40,7 +36,8 @@ func TestClusterLabelPresent(t *testing.T) {
 	// starting one at the time of initialization.
 	inmemSink := metrics.NewInmemSink(
 		1000000*time.Hour,
-		2000000*time.Hour)
+		2000000*time.Hour,
+	)
 	clusterSink := NewClusterMetricSink(testClusterName, defaultMetrics(inmemSink))
 
 	key1 := []string{"aaa", "bbb"}

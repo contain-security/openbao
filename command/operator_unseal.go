@@ -37,7 +37,7 @@ func (c *OperatorUnsealCommand) Help() string {
 	helpText := `
 Usage: bao operator unseal [options] [KEY]
 
-  Provide a portion of the root key to unseal a Vault server. Vault starts
+  Provide a portion of the root key to unseal an OpenBao server. OpenBao starts
   in a sealed state. It cannot perform operations until it is unsealed. This
   command accepts a portion of the root key (an "unseal key").
 
@@ -135,14 +135,14 @@ func (c *OperatorUnsealCommand) Run(args []string) int {
 		}
 
 		// Override the output
-		writer := (io.Writer)(os.Stdout)
+		writer := io.Writer(os.Stdout)
 		if c.testOutput != nil {
 			writer = c.testOutput
 		}
 
-		fmt.Fprintf(writer, "Unseal Key (will be hidden): ")
+		_, _ = fmt.Fprint(writer, "Unseal Key (will be hidden): ")
 		value, err := password.Read(os.Stdin)
-		fmt.Fprintf(writer, "\n")
+		_, _ = fmt.Fprint(writer, "\n")
 		if err != nil {
 			c.UI.Error(wrapAtLength(fmt.Sprintf("An error occurred attempting to "+
 				"ask for an unseal key. The raw error message is shown below, but "+

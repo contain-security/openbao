@@ -27,7 +27,7 @@ type mockPlugin struct {
 var _ dbplugin.Database = &mockPlugin{}
 
 func (m *mockPlugin) Type() (string, error) { return "mock", nil }
-func (m *mockPlugin) CreateUser(_ context.Context, statements dbplugin.Statements, usernameConf dbplugin.UsernameConfig, expiration time.Time) (username string, password string, err error) {
+func (m *mockPlugin) CreateUser(_ context.Context, statements dbplugin.Statements, usernameConf dbplugin.UsernameConfig, expiration time.Time) (username string, password string, err error) { //nolint:govet // we can't change this, the interface is released
 	err = errors.New("err")
 	if usernameConf.DisplayName == "" || expiration.IsZero() {
 		return "", "", err
@@ -42,7 +42,7 @@ func (m *mockPlugin) CreateUser(_ context.Context, statements dbplugin.Statement
 	return usernameConf.DisplayName, "test", nil
 }
 
-func (m *mockPlugin) RenewUser(_ context.Context, statements dbplugin.Statements, username string, expiration time.Time) error {
+func (m *mockPlugin) RenewUser(_ context.Context, statements dbplugin.Statements, username string, expiration time.Time) error { //nolint:govet // we can't change this, the interface is released
 	err := errors.New("err")
 	if username == "" || expiration.IsZero() {
 		return err
@@ -55,7 +55,7 @@ func (m *mockPlugin) RenewUser(_ context.Context, statements dbplugin.Statements
 	return nil
 }
 
-func (m *mockPlugin) RevokeUser(_ context.Context, statements dbplugin.Statements, username string) error {
+func (m *mockPlugin) RevokeUser(_ context.Context, statements dbplugin.Statements, username string) error { //nolint:govet // we can't change this, the interface is released
 	err := errors.New("err")
 	if username == "" {
 		return err
@@ -100,7 +100,7 @@ func (m *mockPlugin) GenerateCredentials(ctx context.Context) (password string, 
 	return password, err
 }
 
-func (m *mockPlugin) SetCredentials(ctx context.Context, statements dbplugin.Statements, staticConfig dbplugin.StaticUserConfig) (username string, password string, err error) {
+func (m *mockPlugin) SetCredentials(ctx context.Context, statements dbplugin.Statements, staticConfig dbplugin.StaticUserConfig) (username string, password string, err error) { //nolint:govet // we can't change this, the interface is released
 	return username, password, err
 }
 
@@ -141,7 +141,7 @@ func TestPlugin_Init(t *testing.T) {
 	cluster, sys := getCluster(t)
 	defer cluster.Cleanup()
 
-	dbRaw, err := dbplugin.PluginFactoryVersion(namespace.RootContext(nil), "test-plugin", "", sys, log.NewNullLogger())
+	dbRaw, err := dbplugin.PluginFactoryVersion(namespace.RootContext(t.Context()), "test-plugin", "", sys, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -150,7 +150,7 @@ func TestPlugin_Init(t *testing.T) {
 		"test": 1,
 	}
 
-	_, err = dbRaw.Init(context.Background(), connectionDetails, true)
+	_, err = dbRaw.Init(t.Context(), connectionDetails, true)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -165,7 +165,7 @@ func TestPlugin_CreateUser(t *testing.T) {
 	cluster, sys := getCluster(t)
 	defer cluster.Cleanup()
 
-	db, err := dbplugin.PluginFactoryVersion(namespace.RootContext(nil), "test-plugin", "", sys, log.NewNullLogger())
+	db, err := dbplugin.PluginFactoryVersion(namespace.RootContext(t.Context()), "test-plugin", "", sys, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -175,17 +175,15 @@ func TestPlugin_CreateUser(t *testing.T) {
 		"test": 1,
 	}
 
-	_, err = db.Init(context.Background(), connectionDetails, true)
+	_, err = db.Init(t.Context(), connectionDetails, true)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
-	usernameConf := dbplugin.UsernameConfig{
+	us, pw, err := db.CreateUser(t.Context(), dbplugin.Statements{}, dbplugin.UsernameConfig{
 		DisplayName: "test",
 		RoleName:    "test",
-	}
-
-	us, pw, err := db.CreateUser(context.Background(), dbplugin.Statements{}, usernameConf, time.Now().Add(time.Minute))
+	}, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -195,7 +193,10 @@ func TestPlugin_CreateUser(t *testing.T) {
 
 	// try and save the same user again to verify it saved the first time, this
 	// should return an error
-	_, _, err = db.CreateUser(context.Background(), dbplugin.Statements{}, usernameConf, time.Now().Add(time.Minute))
+	_, _, err = db.CreateUser(t.Context(), dbplugin.Statements{}, dbplugin.UsernameConfig{
+		DisplayName: "test",
+		RoleName:    "test",
+	}, time.Now().Add(time.Minute))
 	if err == nil {
 		t.Fatal("expected an error, user wasn't created correctly")
 	}
@@ -205,7 +206,7 @@ func TestPlugin_RenewUser(t *testing.T) {
 	cluster, sys := getCluster(t)
 	defer cluster.Cleanup()
 
-	db, err := dbplugin.PluginFactoryVersion(namespace.RootContext(nil), "test-plugin", "", sys, log.NewNullLogger())
+	db, err := dbplugin.PluginFactoryVersion(namespace.RootContext(t.Context()), "test-plugin", "", sys, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -214,22 +215,20 @@ func TestPlugin_RenewUser(t *testing.T) {
 	connectionDetails := map[string]interface{}{
 		"test": 1,
 	}
-	_, err = db.Init(context.Background(), connectionDetails, true)
+	_, err = db.Init(t.Context(), connectionDetails, true)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
-	usernameConf := dbplugin.UsernameConfig{
+	us, _, err := db.CreateUser(t.Context(), dbplugin.Statements{}, dbplugin.UsernameConfig{
 		DisplayName: "test",
 		RoleName:    "test",
-	}
-
-	us, _, err := db.CreateUser(context.Background(), dbplugin.Statements{}, usernameConf, time.Now().Add(time.Minute))
+	}, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
-	err = db.RenewUser(context.Background(), dbplugin.Statements{}, us, time.Now().Add(time.Minute))
+	err = db.RenewUser(t.Context(), dbplugin.Statements{}, us, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -239,7 +238,7 @@ func TestPlugin_RevokeUser(t *testing.T) {
 	cluster, sys := getCluster(t)
 	defer cluster.Cleanup()
 
-	db, err := dbplugin.PluginFactoryVersion(namespace.RootContext(nil), "test-plugin", "", sys, log.NewNullLogger())
+	db, err := dbplugin.PluginFactoryVersion(namespace.RootContext(t.Context()), "test-plugin", "", sys, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -248,29 +247,30 @@ func TestPlugin_RevokeUser(t *testing.T) {
 	connectionDetails := map[string]interface{}{
 		"test": 1,
 	}
-	_, err = db.Init(context.Background(), connectionDetails, true)
+	_, err = db.Init(t.Context(), connectionDetails, true)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
-	usernameConf := dbplugin.UsernameConfig{
+	us, _, err := db.CreateUser(t.Context(), dbplugin.Statements{}, dbplugin.UsernameConfig{
 		DisplayName: "test",
 		RoleName:    "test",
-	}
-
-	us, _, err := db.CreateUser(context.Background(), dbplugin.Statements{}, usernameConf, time.Now().Add(time.Minute))
+	}, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
 	// Test default revoke statements
-	err = db.RevokeUser(context.Background(), dbplugin.Statements{}, us)
+	err = db.RevokeUser(t.Context(), dbplugin.Statements{}, us)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
 	// Try adding the same username back so we can verify it was removed
-	_, _, err = db.CreateUser(context.Background(), dbplugin.Statements{}, usernameConf, time.Now().Add(time.Minute))
+	_, _, err = db.CreateUser(t.Context(), dbplugin.Statements{}, dbplugin.UsernameConfig{
+		DisplayName: "test",
+		RoleName:    "test",
+	}, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}

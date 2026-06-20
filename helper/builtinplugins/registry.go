@@ -4,7 +4,7 @@
 package builtinplugins
 
 import (
-	"context"
+	"slices"
 
 	credAppRole "github.com/openbao/openbao/builtin/credential/approle"
 	credCert "github.com/openbao/openbao/builtin/credential/cert"
@@ -27,7 +27,6 @@ import (
 	dbMysql "github.com/openbao/openbao/plugins/database/mysql"
 	dbPostgres "github.com/openbao/openbao/plugins/database/postgresql"
 	dbValkey "github.com/openbao/openbao/plugins/database/valkey"
-	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
@@ -56,16 +55,6 @@ type databasePlugin struct {
 type logicalBackend struct {
 	logical.Factory
 	consts.DeprecationStatus
-}
-
-type removedBackend struct {
-	*framework.Backend
-}
-
-func removedFactory(ctx context.Context, config *logical.BackendConfig) (logical.Backend, error) {
-	removedBackend := &removedBackend{}
-	removedBackend.Backend = &framework.Backend{}
-	return removedBackend, nil
 }
 
 func newRegistry() *registry {
@@ -165,12 +154,7 @@ func (r *registry) Keys(pluginType consts.PluginType) []string {
 }
 
 func (r *registry) Contains(name string, pluginType consts.PluginType) bool {
-	for _, key := range r.Keys(pluginType) {
-		if key == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(r.Keys(pluginType), name)
 }
 
 // DeprecationStatus returns the Deprecation status for a builtin with type `pluginType`

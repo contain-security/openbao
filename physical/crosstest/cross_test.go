@@ -29,7 +29,6 @@
 package crosstest
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -38,9 +37,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/armon/go-metrics"
 	"github.com/go-test/deep"
 	log "github.com/hashicorp/go-hclog"
+	metrics "github.com/hashicorp/go-metrics/compat"
 	"github.com/stretchr/testify/require"
 
 	"github.com/openbao/openbao/physical/postgresql"
@@ -71,7 +70,7 @@ func Test_ExerciseBackends(t *testing.T) {
 	// we wrote to the same area of storage in lots of places.
 	for name, backend := range backends {
 		if txn, ok := backend.(physical.Transaction); ok {
-			err := txn.Rollback(context.Background())
+			err := txn.Rollback(t.Context())
 			require.NoError(t, err, "failed to rollback transaction: %v", name)
 		}
 	}
@@ -91,31 +90,18 @@ func Test_RandomOpsBackends(t *testing.T) {
 func Test_RandomOpsTransactionalBackends(t *testing.T) {
 	t.Parallel()
 
-	backends, cleanup := allTransactionalPhysical(t)
-	defer cleanup()
+	backends := allTransactionalPhysical(t)
 
 	txLimit := 10
 	ops := getRandomOps(t, numTxOps, true, txLimit)
 	executeRandomTransactionalOps(t, backends, ops, txLimit)
 }
 
-func replayOps(t *testing.T, file string) []*inmem.InmemOp {
-	data, err := os.ReadFile(file)
-	require.NoError(t, err, "error reading operations file")
-
-	var results []*inmem.InmemOp
-	err = json.Unmarshal(data, &results)
-	require.NoError(t, err, "error unmarshaling operations json")
-
-	return results
-}
-
 func Test_ExerciseTransactionalBackends(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 
-	backends, cleanup := allTransactionalPhysical(t)
-	defer cleanup()
+	backends := allTransactionalPhysical(t)
 
 	// Create transactions and exercise the backend, rolling them back.
 	txns := make(map[string]physical.Backend, 2*len(backends))
@@ -157,32 +143,29 @@ func Test_ExerciseTransactionalBackends(t *testing.T) {
 	exerciseTransactions(t, backends)
 }
 
-func getFile(t *testing.T, logger log.Logger) (physical.Backend, func()) {
-	backendPath, err := os.MkdirTemp("", "vault")
-	require.NoError(t, err, "error while creating file storage")
+func getFile(t *testing.T, logger log.Logger) physical.Backend {
+	backendPath := t.TempDir()
 
 	b, err := file.NewFileBackend(map[string]string{
 		"path": backendPath,
 	}, logger)
 	require.NoError(t, err, "error while initializing file backend")
 
-	return b, func() {
-		os.RemoveAll(backendPath)
-	}
+	return b
 }
 
 func allPhysical(t *testing.T) (map[string]physical.Backend, func()) {
-	ctx := context.Background()
+	ctx := t.Context()
 	logger := logging.NewVaultLogger(log.Debug)
 	disableTxConf := map[string]string{"disable_transactions": "true"}
 
 	// Basic storage backends.
 
 	// raft, no transaction called on it.
-	prb, raftPureDir := raft.GetRaft(t, true, true)
+	prb := raft.GetRaft(t, true, true)
 
 	// raft
-	rb, raftDir := raft.GetRaft(t, true, true)
+	rb := raft.GetRaft(t, true, true)
 
 	// raft-in-tx
 	//
@@ -193,7 +176,7 @@ func allPhysical(t *testing.T) (map[string]physical.Backend, func()) {
 	require.NoError(t, err, "failed to start raft transaction")
 
 	// file
-	fb, fileCleanup := getFile(t, logger)
+	fb := getFile(t, logger)
 
 	// inmem
 	inm, err := inmem.NewInmem(disableTxConf, logger)
@@ -214,7 +197,7 @@ func allPhysical(t *testing.T) (map[string]physical.Backend, func()) {
 	// Now compose multiple storage backends together!
 
 	// raft + cache
-	rbc, raftCacheDir := raft.GetRaft(t, true, true)
+	rbc := raft.GetRaft(t, true, true)
 	crb := physical.NewCache(rbc, 0, logger, &metrics.BlackholeSink{})
 
 	// raft + cache-in-tx
@@ -228,7 +211,7 @@ func allPhysical(t *testing.T) (map[string]physical.Backend, func()) {
 	crt := physical.NewCache(rtc, 0, logger, &metrics.BlackholeSink{})
 
 	// file + cache
-	fbc, fileCacheCleanup := getFile(t, logger)
+	fbc := getFile(t, logger)
 	cfb := physical.NewCache(fbc, 0, logger, &metrics.BlackholeSink{})
 
 	// inmem + cache
@@ -241,7 +224,7 @@ func allPhysical(t *testing.T) (map[string]physical.Backend, func()) {
 	cpsql := physical.NewCache(psqlc, 0, logger, &metrics.BlackholeSink{})
 
 	// raft + encoding
-	rbe, raftEncodingDir := raft.GetRaft(t, true, true)
+	rbe := raft.GetRaft(t, true, true)
 	erb := physical.NewStorageEncoding(rbe)
 
 	// raft + encoding-in-tx
@@ -255,7 +238,7 @@ func allPhysical(t *testing.T) (map[string]physical.Backend, func()) {
 	ert := physical.NewStorageEncoding(rte)
 
 	// file + encoding
-	fbe, fileEncodingCleanup := getFile(t, logger)
+	fbe := getFile(t, logger)
 	efb := physical.NewStorageEncoding(fbe)
 
 	// inmem + encoding
@@ -268,12 +251,12 @@ func allPhysical(t *testing.T) (map[string]physical.Backend, func()) {
 	epsql := physical.NewStorageEncoding(psqle)
 
 	// raft + cache + encoding
-	rbce, raftCacheEncodingDir := raft.GetRaft(t, true, true)
+	rbce := raft.GetRaft(t, true, true)
 	crbe := physical.NewCache(rbce, 0, logger, &metrics.BlackholeSink{})
 	erbc := physical.NewStorageEncoding(crbe)
 
 	// file + cache + encoding
-	fbce, fileCacheEncodingCleanup := getFile(t, logger)
+	fbce := getFile(t, logger)
 	cfbe := physical.NewCache(fbce, 0, logger, &metrics.BlackholeSink{})
 	efbc := physical.NewStorageEncoding(cfbe)
 
@@ -322,40 +305,31 @@ func allPhysical(t *testing.T) (map[string]physical.Backend, func()) {
 			"psql+encoding":       epsql,
 			"psql+cache+encoding": epsqlc,
 		}, func() {
-			os.RemoveAll(raftPureDir)
-			os.RemoveAll(raftDir)
-			fileCleanup()
 			psqlCleanup()
-			os.RemoveAll(raftCacheDir)
-			fileCacheCleanup()
 			psqlcCleanup()
-			os.RemoveAll(raftEncodingDir)
-			fileEncodingCleanup()
 			psqleCleanup()
-			os.RemoveAll(raftCacheEncodingDir)
-			fileCacheEncodingCleanup()
 			psqlceCleanup()
 		}
 }
 
-func allTransactionalPhysical(t *testing.T) (map[string]physical.TransactionalBackend, func()) {
+func allTransactionalPhysical(t *testing.T) map[string]physical.TransactionalBackend {
 	logger := logging.NewVaultLogger(log.Debug)
 
 	// Basic storage backends.
 
 	// raft
-	rb, raftDir := raft.GetRaft(t, true, true)
+	rb := raft.GetRaft(t, true, true)
 
 	// raft + cache
-	rbc, raftCacheDir := raft.GetRaft(t, true, true)
+	rbc := raft.GetRaft(t, true, true)
 	crb := physical.NewCache(rbc, 0, logger, &metrics.BlackholeSink{}).(physical.TransactionalBackend)
 
 	// raft + encoding
-	rbe, raftEncodingDir := raft.GetRaft(t, true, true)
+	rbe := raft.GetRaft(t, true, true)
 	erb := physical.NewStorageEncoding(rbe).(physical.TransactionalBackend)
 
 	// raft + cache + encoding
-	rbce, raftCacheEncodingDir := raft.GetRaft(t, true, true)
+	rbce := raft.GetRaft(t, true, true)
 	crbe := physical.NewCache(rbce, 0, logger, &metrics.BlackholeSink{}).(physical.TransactionalBackend)
 	ecrb := physical.NewStorageEncoding(crbe).(physical.TransactionalBackend)
 
@@ -371,25 +345,20 @@ func allTransactionalPhysical(t *testing.T) (map[string]physical.TransactionalBa
 	cim := physical.NewCache(imc, 0, logger, &metrics.BlackholeSink{}).(physical.TransactionalBackend)
 
 	return map[string]physical.TransactionalBackend{
-			"raft":                rb,
-			"raft+cache":          crb,
-			"raft+encoding":       erb,
-			"raft+cache+encoding": ecrb,
-			"txinmem":             im,
-			"txinmem+cache":       cim,
-		}, func() {
-			os.RemoveAll(raftDir)
-			os.RemoveAll(raftCacheDir)
-			os.RemoveAll(raftEncodingDir)
-			os.RemoveAll(raftCacheEncodingDir)
-		}
+		"raft":                rb,
+		"raft+cache":          crb,
+		"raft+encoding":       erb,
+		"raft+cache+encoding": ecrb,
+		"txinmem":             im,
+		"txinmem+cache":       cim,
+	}
 }
 
 func allDoList(t *testing.T, backends map[string]physical.Backend, prefix string) (map[string][]string, map[string]error) {
 	results := make(map[string][]string, len(backends))
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
-		result, err := backend.List(context.Background(), prefix)
+		result, err := backend.List(t.Context(), prefix)
 		results[name] = result
 		errs[name] = err
 	}
@@ -401,7 +370,7 @@ func allDoListPage(t *testing.T, backends map[string]physical.Backend, prefix st
 	results := make(map[string][]string, len(backends))
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
-		result, err := backend.ListPage(context.Background(), prefix, after, limit)
+		result, err := backend.ListPage(t.Context(), prefix, after, limit)
 		results[name] = result
 		errs[name] = err
 	}
@@ -412,7 +381,7 @@ func allDoListPage(t *testing.T, backends map[string]physical.Backend, prefix st
 func allDoDelete(t *testing.T, backends map[string]physical.Backend, key string) map[string]error {
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
-		err := backend.Delete(context.Background(), key)
+		err := backend.Delete(t.Context(), key)
 		errs[name] = err
 	}
 
@@ -423,7 +392,7 @@ func allDoPut(t *testing.T, backends map[string]physical.Backend, key string, va
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
 		// Other entry fields are unnecessary.
-		err := backend.Put(context.Background(), &physical.Entry{
+		err := backend.Put(t.Context(), &physical.Entry{
 			Key:   key,
 			Value: value,
 		})
@@ -437,7 +406,7 @@ func allDoGet(t *testing.T, backends map[string]physical.Backend, key string) (m
 	results := make(map[string]*physical.Entry, len(backends))
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
-		result, err := backend.Get(context.Background(), key)
+		result, err := backend.Get(t.Context(), key)
 		results[name] = result
 		errs[name] = err
 	}
@@ -450,7 +419,7 @@ func allDoBeginTx(t *testing.T, backends map[string]physical.TransactionalBacken
 	results := make(map[string]physical.Backend, len(backends))
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
-		result, err := backend.BeginTx(context.Background())
+		result, err := backend.BeginTx(t.Context())
 		results[name] = result
 		errs[name] = err
 	}
@@ -462,7 +431,7 @@ func allDoBeginReadOnlyTx(t *testing.T, backends map[string]physical.Transaction
 	results := make(map[string]physical.Backend, len(backends))
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
-		result, err := backend.BeginReadOnlyTx(context.Background())
+		result, err := backend.BeginReadOnlyTx(t.Context())
 		results[name] = result
 		errs[name] = err
 	}
@@ -474,7 +443,7 @@ func allDoCommit(t *testing.T, backends map[string]physical.Backend) map[string]
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
 		tx := backend.(physical.Transaction)
-		err := tx.Commit(context.Background())
+		err := tx.Commit(t.Context())
 		errs[name] = err
 	}
 
@@ -485,7 +454,7 @@ func allDoRollback(t *testing.T, backends map[string]physical.Backend) map[strin
 	errs := make(map[string]error, len(backends))
 	for name, backend := range backends {
 		tx := backend.(physical.Transaction)
-		err := tx.Rollback(context.Background())
+		err := tx.Rollback(t.Context())
 		errs[name] = err
 	}
 
@@ -834,7 +803,7 @@ func exerciseBackends(t *testing.T, backends map[string]physical.Backend) {
 
 	// Finally, test pagination exhaustively.
 	var created []string
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		name := fmt.Sprintf("key-%d", i)
 		allDoSamePut(t, backends, name, testString, false)
 		created = append(created, name)
@@ -1064,11 +1033,11 @@ func getRandomOps(t *testing.T, count int, transactional bool, txLimit int) []*i
 		opContents[len(opContents)-1] += "0123456789"
 	}
 
-	for i := 0; i < count; i++ {
+	for range count {
 		opI := rand.Intn(len(opTypes))
 		op := opTypes[opI]
 
-		var tx int = rand.Intn(txLimit+1) - 1
+		tx := rand.Intn(txLimit+1) - 1
 		var path string
 		var contents string
 		var after string
@@ -1264,16 +1233,16 @@ func BenchmarkClearView(b *testing.B) {
 		s := &logical.InmemStorage{}
 
 		randomData(b, s, "secrets-without-pagination/"+prefix, b.N, size)
-		count, err := logical.CountKeys(context.Background(), s)
+		count, err := logical.CountKeys(b.Context(), s)
 		require.NoError(b, err)
 		require.Equal(b, b.N, count)
 		b.ResetTimer()
 
 		b.Logf("Starting clear")
-		logical.ClearViewWithoutPagination(context.Background(), s, logger)
+		require.NoError(b, logical.ClearViewWithoutPagination(b.Context(), s, logger))
 		b.Logf("Ending clear")
 
-		count, err = logical.CountKeys(context.Background(), s)
+		count, err = logical.CountKeys(b.Context(), s)
 		require.NoError(b, err)
 		require.Equal(b, 0, count)
 	})
@@ -1282,65 +1251,63 @@ func BenchmarkClearView(b *testing.B) {
 		s := &logical.InmemStorage{}
 
 		randomData(b, s, "secrets-with-pagination/"+prefix, b.N, size)
-		count, err := logical.CountKeys(context.Background(), s)
+		count, err := logical.CountKeys(b.Context(), s)
 		require.NoError(b, err)
 		require.Equal(b, b.N, count)
 		b.ResetTimer()
 
 		b.Logf("Starting clear")
-		logical.ClearViewWithPagination(context.Background(), s, logger)
+		require.NoError(b, logical.ClearViewWithPagination(b.Context(), s, logger))
 		b.Logf("Ending clear")
 
-		count, err = logical.CountKeys(context.Background(), s)
+		count, err = logical.CountKeys(b.Context(), s)
 		require.NoError(b, err)
 		require.Equal(b, 0, count)
 	})
 
 	b.Run("Raft/WithoutPagination", func(b *testing.B) {
-		raft, dir := raft.GetRaft(b, true, true)
-		defer os.RemoveAll(dir)
+		raft := raft.GetRaft(b, true, true)
 
 		r := logical.NewLogicalStorage(raft)
 
 		randomData(b, r, "secrets-without-pagination/"+prefix, b.N, size)
-		count, err := logical.CountKeys(context.Background(), r)
+		count, err := logical.CountKeys(b.Context(), r)
 		require.NoError(b, err)
 		require.Equal(b, b.N, count)
 		b.ResetTimer()
 
 		b.Logf("Starting clear")
-		logical.ClearViewWithoutPagination(context.Background(), r, logger)
+		require.NoError(b, logical.ClearViewWithoutPagination(b.Context(), r, logger))
 		b.Logf("Ending clear")
 
-		count, err = logical.CountKeys(context.Background(), r)
+		count, err = logical.CountKeys(b.Context(), r)
 		require.NoError(b, err)
 		require.Equal(b, 0, count)
 	})
 
 	b.Run("Raft/WithPagination", func(b *testing.B) {
-		raft, dir := raft.GetRaft(b, true, true)
-		defer os.RemoveAll(dir)
+		raft := raft.GetRaft(b, true, true)
 
 		r := logical.NewLogicalStorage(raft)
 
 		randomData(b, r, "secrets-with-pagination/"+prefix, b.N, size)
-		count, err := logical.CountKeys(context.Background(), r)
+		count, err := logical.CountKeys(b.Context(), r)
 		require.NoError(b, err)
 		require.Equal(b, b.N, count)
 		b.ResetTimer()
 
 		b.Logf("Starting clear")
-		logical.ClearViewWithPagination(context.Background(), r, logger)
+		require.NoError(b, logical.ClearViewWithPagination(b.Context(), r, logger))
 		b.Logf("Ending clear")
 
-		count, err = logical.CountKeys(context.Background(), r)
+		count, err = logical.CountKeys(b.Context(), r)
 		require.NoError(b, err)
 		require.Equal(b, 0, count)
 	})
 }
 
 func randomData(t testing.TB, s logical.Storage, prefix string, count int, size int) {
-	for i := 0; i < count; i++ {
+	for i := range count {
 		contents := fmt.Sprintf("%d", i%10)
 		for len(contents) < size {
 			contents += contents
@@ -1349,7 +1316,7 @@ func randomData(t testing.TB, s logical.Storage, prefix string, count int, size 
 
 		entry := fmt.Sprintf("%v-%v", prefix, i)
 
-		if err := s.Put(context.Background(), &logical.StorageEntry{
+		if err := s.Put(t.Context(), &logical.StorageEntry{
 			Key:   entry,
 			Value: []byte(contents),
 		}); err != nil {

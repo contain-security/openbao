@@ -4,7 +4,6 @@
 package openldap
 
 import (
-	"context"
 	"testing"
 
 	"github.com/openbao/openbao/sdk/v2/logical"
@@ -12,8 +11,8 @@ import (
 
 func TestCreds(t *testing.T) {
 	t.Run("happy path with creds", func(t *testing.T) {
-		b, storage := getBackend(false)
-		defer b.Cleanup(context.Background())
+		b, storage := getBackend(t, false)
+		defer b.Cleanup(t.Context())
 
 		data := map[string]interface{}{
 			"binddn":      "tester",
@@ -29,7 +28,7 @@ func TestCreds(t *testing.T) {
 			Data:      data,
 		}
 
-		resp, err := b.HandleRequest(context.Background(), req)
+		resp, err := b.HandleRequest(t.Context(), req)
 		if err != nil || (resp != nil && resp.IsError()) {
 			t.Fatalf("err:%s resp:%#v\n", err, resp)
 		}
@@ -47,7 +46,7 @@ func TestCreds(t *testing.T) {
 			Data:      data,
 		}
 
-		resp, err = b.HandleRequest(context.Background(), req)
+		resp, err = b.HandleRequest(t.Context(), req)
 		if err != nil || (resp != nil && resp.IsError()) {
 			t.Fatalf("err:%s resp:%#v\n", err, resp)
 		}
@@ -59,7 +58,7 @@ func TestCreds(t *testing.T) {
 			Data:      nil,
 		}
 
-		resp, err = b.HandleRequest(context.Background(), req)
+		resp, err = b.HandleRequest(t.Context(), req)
 		if err != nil || (resp != nil && resp.IsError()) {
 			t.Fatalf("err:%s resp:%#v\n", err, resp)
 		}
@@ -71,7 +70,7 @@ func TestCreds(t *testing.T) {
 			Data:      nil,
 		}
 
-		resp, err = b.HandleRequest(context.Background(), req)
+		resp, err = b.HandleRequest(t.Context(), req)
 		if err != nil || (resp != nil && resp.IsError()) {
 			t.Fatalf("err:%s resp:%#v\n", err, resp)
 		}
@@ -102,8 +101,8 @@ func TestCreds(t *testing.T) {
 	})
 
 	t.Run("cred doesn't exist", func(t *testing.T) {
-		b, storage := getBackend(false)
-		defer b.Cleanup(context.Background())
+		b, storage := getBackend(t, false)
+		defer b.Cleanup(t.Context())
 
 		req := &logical.Request{
 			Operation: logical.ReadOperation,
@@ -112,7 +111,7 @@ func TestCreds(t *testing.T) {
 			Data:      nil,
 		}
 
-		resp, err := b.HandleRequest(context.Background(), req)
+		resp, err := b.HandleRequest(t.Context(), req)
 		if err != nil {
 			t.Fatalf("error reading cred: %s", err)
 		}

@@ -4,7 +4,6 @@
 package pki
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -38,7 +37,7 @@ func TestCelRoleIssueWithGenerateLeaseAndNoStore(t *testing.T) {
 		Storage:   storage,
 		Data:      caData,
 	}
-	caResp, err := b.HandleRequest(context.Background(), caReq)
+	caResp, err := b.HandleRequest(t.Context(), caReq)
 	if err != nil || (caResp != nil && caResp.IsError()) {
 		t.Fatalf("Failed to initialize CA: err: %v, resp: %#v", err, caResp)
 	}
@@ -134,7 +133,7 @@ func TestCelRoleIssueWithGenerateLeaseAndNoStore(t *testing.T) {
 		Data:      roleData,
 	}
 
-	resp, err := b.HandleRequest(context.Background(), roleReq)
+	resp, err := b.HandleRequest(t.Context(), roleReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to create CEL role: err: %v, resp: %v", err, resp)
 	}
@@ -158,7 +157,7 @@ func TestCelRoleIssueWithGenerateLeaseAndNoStore(t *testing.T) {
 		Data:      issueData,
 	}
 
-	resp, err = b.HandleRequest(context.Background(), issueReq)
+	resp, err = b.HandleRequest(t.Context(), issueReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to issue certificate: err: %v, \nresp: %v", err, resp)
 	}
@@ -213,7 +212,7 @@ func TestCelRoleIssueWithGenerateLeaseAndNoStore(t *testing.T) {
 	}
 
 	// list certs
-	listResp, err := b.HandleRequest(context.Background(), &logical.Request{
+	listResp, err := b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.ListOperation,
 		Path:      "certs",
 		Storage:   storage,
@@ -247,7 +246,7 @@ func TestCelRoleSign(t *testing.T) {
 		Storage:   storage,
 		Data:      caData,
 	}
-	caResp, err := b.HandleRequest(context.Background(), caReq)
+	caResp, err := b.HandleRequest(t.Context(), caReq)
 	if err != nil || (caResp != nil && caResp.IsError()) {
 		t.Fatalf("Failed to initialize CA: err: %v, resp: %#v", err, caResp)
 	}
@@ -323,7 +322,7 @@ func TestCelRoleSign(t *testing.T) {
 		Data:      roleData,
 	}
 
-	resp, err := b.HandleRequest(context.Background(), roleReq)
+	resp, err := b.HandleRequest(t.Context(), roleReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to create CEL role: err: %v, resp: %v", err, resp)
 	}
@@ -360,7 +359,7 @@ func TestCelRoleSign(t *testing.T) {
 		Data:      signData,
 	}
 
-	resp, err = b.HandleRequest(context.Background(), signReq)
+	resp, err = b.HandleRequest(t.Context(), signReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to sign certificate with CSR: %v, \nresp: %v", err, resp)
 	}
@@ -418,7 +417,7 @@ func TestCelRoleIssueWithMultipleRootsPresent(t *testing.T) {
 		Storage:   storage,
 		Data:      caData,
 	}
-	caResp, err := b.HandleRequest(context.Background(), caReq)
+	caResp, err := b.HandleRequest(t.Context(), caReq)
 	if err != nil || (caResp != nil && caResp.IsError()) {
 		t.Fatalf("Failed to initialize CA: err: %v, resp: %#v", err, caResp)
 	}
@@ -452,7 +451,7 @@ func TestCelRoleIssueWithMultipleRootsPresent(t *testing.T) {
 		Storage:   storage,
 		Data:      caData2,
 	}
-	caResp2, err := b.HandleRequest(context.Background(), caReq2)
+	caResp2, err := b.HandleRequest(t.Context(), caReq2)
 	if err != nil || (caResp2 != nil && caResp2.IsError()) {
 		t.Fatalf("Failed to initialize CA: err: %v, resp: %#v", err, caResp2)
 	}
@@ -531,7 +530,7 @@ func TestCelRoleIssueWithMultipleRootsPresent(t *testing.T) {
 		Data:      roleData,
 	}
 
-	resp, err := b.HandleRequest(context.Background(), roleReq)
+	resp, err := b.HandleRequest(t.Context(), roleReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to create CEL role: err: %v, resp: %v", err, resp)
 	}
@@ -550,7 +549,7 @@ func TestCelRoleIssueWithMultipleRootsPresent(t *testing.T) {
 		Data:      issueData,
 	}
 
-	resp, err = b.HandleRequest(context.Background(), issueReq)
+	resp, err = b.HandleRequest(t.Context(), issueReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to issue certificate: err: %v, \nresp: %v", err, resp)
 	}
@@ -584,7 +583,7 @@ func TestCelRoleIssueWithMultipleRootsPresent(t *testing.T) {
 	}
 
 	// list certs
-	listResp, err := b.HandleRequest(context.Background(), &logical.Request{
+	listResp, err := b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.ListOperation,
 		Path:      "certs",
 		Storage:   storage,
@@ -618,7 +617,7 @@ func TestCelParsedCsr(t *testing.T) {
 		Storage:   storage,
 		Data:      caData,
 	}
-	caResp, err := b.HandleRequest(context.Background(), caReq)
+	caResp, err := b.HandleRequest(t.Context(), caReq)
 	if err != nil || (caResp != nil && caResp.IsError()) {
 		t.Fatalf("Failed to initialize CA: err: %v, resp: %#v", err, caResp)
 	}
@@ -666,7 +665,7 @@ func TestCelParsedCsr(t *testing.T) {
 		Data:      roleData,
 	}
 
-	resp, err := b.HandleRequest(context.Background(), roleReq)
+	resp, err := b.HandleRequest(t.Context(), roleReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to create CEL role: err: %v, resp: %v", err, resp)
 	}
@@ -701,7 +700,7 @@ func TestCelParsedCsr(t *testing.T) {
 		Data:      signData,
 	}
 
-	resp, err = b.HandleRequest(context.Background(), signReq)
+	resp, err = b.HandleRequest(t.Context(), signReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to sign certificate with CSR: err: %v, \nresp: %v", err, resp)
 	}
@@ -747,7 +746,7 @@ func TestCelCustomFunction(t *testing.T) {
 		Storage:   storage,
 		Data:      caData,
 	}
-	caResp, err := b.HandleRequest(context.Background(), caReq)
+	caResp, err := b.HandleRequest(t.Context(), caReq)
 	if err != nil || (caResp != nil && caResp.IsError()) {
 		t.Fatalf("Failed to initialize CA: err: %v, resp: %#v", err, caResp)
 	}
@@ -773,8 +772,12 @@ func TestCelCustomFunction(t *testing.T) {
 		"cel_program": map[string]interface{}{
 			"variables": []map[string]interface{}{
 				{
+					"name":       "emails",
+					"expression": `decode_json(request.extensions["subject_alt_name"]).emails`,
+				},
+				{
 					"name":       "valid_emails",
-					"expression": `check_valid_email(request.alt_names)`,
+					"expression": `check_valid_email(emails[0])`,
 				},
 				{
 					"name":       "ttl",
@@ -783,20 +786,20 @@ func TestCelCustomFunction(t *testing.T) {
 				{
 					"name": "cert",
 					"expression": `CertTemplate{
-						Subject: PKIX.Name{                   
+						Subject: PKIX.Name{
 							CommonName: request.common_name,
 						},
 						NotBefore: now,
 						NotAfter: now + duration(ttl),
-						EmailAddresses: [request.alt_names],		
+						EmailAddresses: emails,
 					}`,
 				},
 				{
 					"name": "output",
 					"expression": `ValidationOutput{
-						template:        cert,						
-						issuer_ref:         "default",
-						warnings: [duration(request.ttl) < duration('5h') ? 'ttl has been modified to 5h.' : ''],
+						template:   cert,
+						issuer_ref: "default",
+						warnings:   [duration(request.ttl) < duration('5h') ? 'ttl has been modified to 5h.' : ''],
 					  }`,
 				},
 				{
@@ -815,7 +818,7 @@ func TestCelCustomFunction(t *testing.T) {
 		Data:      roleData,
 	}
 
-	resp, err := b.HandleRequest(context.Background(), roleReq)
+	resp, err := b.HandleRequest(t.Context(), roleReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to create CEL role: err: %v, resp: %v", err, resp)
 	}
@@ -825,6 +828,13 @@ func TestCelCustomFunction(t *testing.T) {
 		"common_name": "example.com",
 		"alt_names":   "example@gmail.com",
 		"ttl":         "4h",
+		"extensions": map[string]interface{}{
+			"subject_alt_name": `{
+				"dns":    ["example.com", "www.example.com"],
+				"emails": ["example@gmail.com"],
+				"ips":    ["203.0.113.7"]
+			}`,
+		},
 	}
 
 	issueReq := &logical.Request{
@@ -834,7 +844,7 @@ func TestCelCustomFunction(t *testing.T) {
 		Data:      issueData,
 	}
 
-	resp, err = b.HandleRequest(context.Background(), issueReq)
+	resp, err = b.HandleRequest(t.Context(), issueReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to issue certificate: err: %v, \nresp: %v", err, resp)
 	}
@@ -884,7 +894,7 @@ func TestNotAfter(t *testing.T) {
 		Storage:   storage,
 		Data:      caData,
 	}
-	caResp, err := b.HandleRequest(context.Background(), caReq)
+	caResp, err := b.HandleRequest(t.Context(), caReq)
 	if err != nil || (caResp != nil && caResp.IsError()) {
 		t.Fatalf("Failed to initialize CA: err: %v, resp: %#v", err, caResp)
 	}
@@ -957,7 +967,7 @@ func TestNotAfter(t *testing.T) {
 		Data:      roleData,
 	}
 
-	resp, err := b.HandleRequest(context.Background(), roleReq)
+	resp, err := b.HandleRequest(t.Context(), roleReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to create CEL role: err: %v, resp: %v", err, resp)
 	}
@@ -977,7 +987,7 @@ func TestNotAfter(t *testing.T) {
 		Data:      issueData,
 	}
 
-	resp, err = b.HandleRequest(context.Background(), issueReq)
+	resp, err = b.HandleRequest(t.Context(), issueReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("Failed to issue certificate: err: %v, \nresp: %v", err, resp)
 	}

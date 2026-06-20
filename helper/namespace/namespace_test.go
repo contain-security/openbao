@@ -19,6 +19,14 @@ func TestCanonicalize(t *testing.T) {
 			"",
 		},
 		{
+			"/",
+			"",
+		},
+		{
+			"root",
+			"root/",
+		},
+		{
 			"ns1",
 			"ns1/",
 		},
@@ -30,12 +38,31 @@ func TestCanonicalize(t *testing.T) {
 			"ns1/ns2",
 			"ns1/ns2/",
 		},
+		{
+			"ns1/ns2/..",
+			"ns1/",
+		},
+		{
+			"ns1/ns2/../..",
+			"",
+		},
+		{
+			"ns1////ns2/",
+			"ns1/ns2/",
+		},
 	}
 
 	for i, c := range tcases {
 		result := Canonicalize(c.nsPath)
 		if result != c.result {
-			t.Fatalf("bad test case %d: %s != %s", i, result, c.result)
+			t.Logf("bad test case %d: %q != %q", i, result, c.result)
+			t.Fail()
+		}
+
+		again := Canonicalize(result)
+		if result != again {
+			t.Logf("bad test case, Canonicalize is not idempotent %d: %q != %q", i, result, again)
+			t.Fail()
 		}
 	}
 }
@@ -107,6 +134,16 @@ func TestSplitIDFromString(t *testing.T) {
 		pre, id := SplitIDFromString(c.input)
 		if pre != c.prefix || id != c.id {
 			t.Fatalf("bad test case %d: %s != %s, %s != %s", i, pre, c.prefix, id, c.id)
+		}
+
+		if c.id == "" {
+			require.True(t, RootNamespace.MatchesID(c.input), "input: %v", c.input)
+		} else {
+			ns := &Namespace{
+				ID: c.id,
+			}
+			require.True(t, ns.MatchesID(c.input), "input: %v", c.input)
+			require.False(t, RootNamespace.MatchesID(c.input), "input: %v", c.input)
 		}
 	}
 }

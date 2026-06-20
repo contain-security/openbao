@@ -85,7 +85,7 @@ type PostgreSQL struct {
 }
 
 func (p *PostgreSQL) Initialize(ctx context.Context, req dbplugin.InitializeRequest) (dbplugin.InitializeResponse, error) {
-	newConf, err := p.SQLConnectionProducer.Init(ctx, req.Config, req.VerifyConnection)
+	newConf, err := p.Init(ctx, req.Config, req.VerifyConnection)
 	if err != nil {
 		return dbplugin.InitializeResponse{}, err
 	}
@@ -192,7 +192,7 @@ func (p *PostgreSQL) changeUserPassword(ctx context.Context, username string, ch
 	if err != nil {
 		return fmt.Errorf("unable to start transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
 	for _, stmt := range stmts {
 		for _, query := range strutil.ParseArbitraryStringSlice(stmt, ";") {
@@ -246,9 +246,7 @@ func (p *PostgreSQL) changeUserExpiration(ctx context.Context, username string, 
 	if err != nil {
 		return err
 	}
-	defer func() {
-		tx.Rollback()
-	}()
+	defer tx.Rollback() //nolint:errcheck
 
 	expirationStr := changeExp.NewExpiration.Format(expirationFormat)
 
@@ -297,7 +295,7 @@ func (p *PostgreSQL) NewUser(ctx context.Context, req dbplugin.NewUserRequest) (
 	if err != nil {
 		return dbplugin.NewUserResponse{}, fmt.Errorf("unable to start transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
 	m := map[string]string{
 		"name":       username,
@@ -366,9 +364,7 @@ func (p *PostgreSQL) customDeleteUser(ctx context.Context, username string, revo
 	if err != nil {
 		return err
 	}
-	defer func() {
-		tx.Rollback()
-	}()
+	defer tx.Rollback() //nolint:errcheck
 
 	for _, stmt := range revocationStmts {
 		if containsMultilineStatement(stmt) {
@@ -445,27 +441,32 @@ func (p *PostgreSQL) defaultDeleteUser(ctx context.Context, username string) err
 		}
 		revocationStmts = append(revocationStmts, fmt.Sprintf(
 			`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %s FROM %s;`,
-			(schema),
-			dbutil.QuoteIdentifier(username)))
+			dbutil.QuoteIdentifier(schema),
+			dbutil.QuoteIdentifier(username),
+		))
 
 		revocationStmts = append(revocationStmts, fmt.Sprintf(
 			`REVOKE USAGE ON SCHEMA %s FROM %s;`,
 			dbutil.QuoteIdentifier(schema),
-			dbutil.QuoteIdentifier(username)))
+			dbutil.QuoteIdentifier(username),
+		))
 	}
 
 	// for good measure, revoke all privileges and usage on schema public
 	revocationStmts = append(revocationStmts, fmt.Sprintf(
 		`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM %s;`,
-		dbutil.QuoteIdentifier(username)))
+		dbutil.QuoteIdentifier(username),
+	))
 
 	revocationStmts = append(revocationStmts, fmt.Sprintf(
 		"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM %s;",
-		dbutil.QuoteIdentifier(username)))
+		dbutil.QuoteIdentifier(username),
+	))
 
 	revocationStmts = append(revocationStmts, fmt.Sprintf(
 		"REVOKE USAGE ON SCHEMA public FROM %s;",
-		dbutil.QuoteIdentifier(username)))
+		dbutil.QuoteIdentifier(username),
+	))
 
 	// get the current database name so we can issue a REVOKE CONNECT for
 	// this username
@@ -478,7 +479,8 @@ func (p *PostgreSQL) defaultDeleteUser(ctx context.Context, username string) err
 		revocationStmts = append(revocationStmts, fmt.Sprintf(
 			`REVOKE CONNECT ON DATABASE %s FROM %s;`,
 			dbutil.QuoteIdentifier(dbname.String),
-			dbutil.QuoteIdentifier(username)))
+			dbutil.QuoteIdentifier(username),
+		))
 	}
 
 	// again, here, we do not stop on error, as we want to remove as
@@ -500,7 +502,8 @@ func (p *PostgreSQL) defaultDeleteUser(ctx context.Context, username string) err
 
 	// Drop this user
 	stmt, err = db.PrepareContext(ctx, fmt.Sprintf(
-		`DROP ROLE IF EXISTS %s;`, dbutil.QuoteIdentifier(username)))
+		`DROP ROLE IF EXISTS %s;`, dbutil.QuoteIdentifier(username),
+	))
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,7 @@ package approle
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
@@ -37,7 +38,7 @@ type backend struct {
 	view logical.Storage
 
 	// Guard to clean-up the expired SecretID entries
-	tidySecretIDCASGuard *uint32
+	tidySecretIDCASGuard atomic.Bool
 
 	// Locks to make changes to role entries. These will be initialized to a
 	// predefined number of locks when the backend is created, and will be
@@ -66,34 +67,24 @@ type backend struct {
 }
 
 func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend, error) {
-	b, err := Backend(conf)
-	if err != nil {
-		return nil, err
-	}
+	b := Backend(conf)
 	if err := b.Setup(ctx, conf); err != nil {
 		return nil, err
 	}
 	return b, nil
 }
 
-func Backend(conf *logical.BackendConfig) (*backend, error) {
-	// Create a backend object
+func Backend(conf *logical.BackendConfig) *backend {
 	b := &backend{
 		view: conf.StorageView,
-
 		// Create locks to modify the registered roles
 		roleLocks: locksutil.CreateLocks(),
-
 		// Create locks to modify the generated RoleIDs
 		roleIDLocks: locksutil.CreateLocks(),
-
 		// Create locks to modify the generated SecretIDs
 		secretIDLocks: locksutil.CreateLocks(),
-
 		// Create locks to modify the generated SecretIDAccessors
 		secretIDAccessorLocks: locksutil.CreateLocks(),
-
-		tidySecretIDCASGuard: new(uint32),
 	}
 
 	// Attach the paths and secrets that are to be handled by the backend
@@ -122,7 +113,7 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 		BackendType:    logical.TypeCredential,
 		RunningVersion: ReportedVersion,
 	}
-	return b, nil
+	return b
 }
 
 func (b *backend) Salt(ctx context.Context) (*salt.Salt, error) {
@@ -165,7 +156,9 @@ func (b *backend) invalidate(_ context.Context, key string) {
 func (b *backend) periodicFunc(ctx context.Context, req *logical.Request) error {
 	// Initiate clean-up of expired SecretID entries
 	if b.System().LocalMount() || !b.System().ReplicationState().HasState(consts.ReplicationPerformanceSecondary|consts.ReplicationPerformanceStandby) {
-		b.tidySecretID(ctx, req)
+		if _, err := b.tidySecretID(ctx, req); err != nil {
+			b.Logger().Debug("tidySecretID returned error: %s", err)
+		}
 	}
 	return nil
 }

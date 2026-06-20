@@ -4,9 +4,9 @@
 package file
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	hclog "github.com/hashicorp/go-hclog"
@@ -20,11 +20,7 @@ const (
 )
 
 func testFileSink(t *testing.T, log hclog.Logger) (*sink.SinkConfig, string) {
-	tmpDir, err := os.MkdirTemp("", fmt.Sprintf("%s.", fileServerTestDir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "token")
 
 	config := &sink.SinkConfig{
@@ -47,7 +43,6 @@ func TestFileSink(t *testing.T) {
 	log := logging.NewVaultLogger(hclog.Trace)
 
 	fs, tmpDir := testFileSink(t, log)
-	defer os.RemoveAll(tmpDir)
 
 	path := filepath.Join(tmpDir, "token")
 
@@ -84,11 +79,7 @@ func TestFileSink(t *testing.T) {
 }
 
 func testFileSinkMode(t *testing.T, log hclog.Logger) (*sink.SinkConfig, string) {
-	tmpDir, err := os.MkdirTemp("", fmt.Sprintf("%s.", fileServerTestDir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "token")
 
 	config := &sink.SinkConfig{
@@ -112,7 +103,6 @@ func TestFileSinkMode(t *testing.T) {
 	log := logging.NewVaultLogger(hclog.Trace)
 
 	fs, tmpDir := testFileSinkMode(t, log)
-	defer os.RemoveAll(tmpDir)
 
 	path := filepath.Join(tmpDir, "token")
 
@@ -133,6 +123,68 @@ func TestFileSinkMode(t *testing.T) {
 	}
 	if fi.Mode() != os.FileMode(0o644) {
 		t.Fatalf("wrong file mode was detected at %s", path)
+	}
+
+	fileBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(fileBytes) != uuidStr {
+		t.Fatalf("expected %s, got %s", uuidStr, string(fileBytes))
+	}
+}
+
+func testFileSinkChown(t *testing.T, log hclog.Logger) (*sink.SinkConfig, string) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "token")
+
+	config := &sink.SinkConfig{
+		Logger: log.Named("sink.file"),
+		Config: map[string]interface{}{
+			"path": path,
+			"uid":  os.Getuid(),
+			"gid":  os.Getgid(),
+		},
+	}
+
+	s, err := NewFileSink(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Sink = s
+
+	return config, tmpDir
+}
+
+func TestFileSinkChown(t *testing.T) {
+	log := logging.NewVaultLogger(hclog.Trace)
+
+	fs, tmpDir := testFileSinkChown(t, log)
+	path := filepath.Join(tmpDir, "token")
+
+	uuidStr, _ := uuid.GenerateUUID()
+	if err := fs.WriteToken(uuidStr); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close() //nolint:errcheck
+
+	fi, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stat := fi.Sys().(*syscall.Stat_t)
+	if stat.Uid != uint32(os.Getuid()) {
+		t.Fatalf("expected uid %d, got %d", os.Getuid(), stat.Uid)
+	}
+	if stat.Gid != uint32(os.Getgid()) {
+		t.Fatalf("expected gid %d, got %d", os.Getgid(), stat.Gid)
 	}
 
 	fileBytes, err := os.ReadFile(path)

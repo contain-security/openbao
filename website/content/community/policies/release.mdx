@@ -1,0 +1,86 @@
+---
+layout: docs
+page_title: OpenBao Release Checklist
+sidebar_label: Release Checklist
+description: |-
+  The OpenBao checklist for releases
+---
+
+# Release checklist
+
+This checklist was created after the v2.0.0 release in order to facilitate
+a better release process going forward.
+
+## Pre-release checklist
+
+ - [ ] Designate a release manager and assign them this issue.
+ - [ ] Clone this template into a GitHub release issue.
+ - [ ] Identify target release version (major, minor, or patch & GA or beta) and
+       milestone. Add this issue to the identified milestone.
+ - [ ] Identify and communicate the release timeline.
+      - [ ] Zulip
+      - [ ] Community meeting
+      - [ ] GitHub milestones
+      - [ ] Helm chart team
+ - [ ] Ensure relevant features and bug fixes are present in the release.
+ - [ ] Update Go version pinning in `/.go-release` and in the the `toolchain`
+       directive in `go.mod`; go-releaser uses this version via a custom
+       (in-repo) `set-up-go` action.
+ - [ ] Update external dependencies with vulnerabilities. Major changes should
+       be done earlier in the release cycle to give the community time to find
+       any breaking issues.
+ - [ ] Update container image base layer versions.
+ - [ ] Test the release workflow by creating a nightly release. Ensure that all
+       artifacts build successfully and that required services (GitHub, OCI
+       registries) are not currently unavailable due to outages.
+ - [ ] Check generated changelog via `make release-changelog` and make any
+       necessary updates to entries.
+ - [ ] Draft release notification announcement.
+ - [ ] Tag new API versions (including in auth plugins), if necessary. Minor
+       version numbers follow core release version numbers but patch numbers
+       simply increment; there are no beta releases of API except for new
+       major versions of core.
+      - [ ] When bumping API major version (e.g., v2 -> v3), ensure the module
+            path in `api/go.mod` is first updated to the new version.
+      - [ ] Update SDK to use the new API version, if necessary.
+ - [ ] Tag new SDK version, if necessary. Minor version numbers follow core
+       release version numbers but patch numbers simply increment; there are
+       no beta releases of SDK except for new major versions of core.
+      - [ ] When bumping SDK major version (e.g., v2 -> v3), ensure the module
+            path in `sdk/go.mod` is first updated to the new version.
+
+## Release checklist
+
+ - [ ] Open & merge PR to update `CHANGELOG.md` and release notes on website.
+      - [ ] Patch versions should go in the corresponding minor version's
+            existing page; new minor and major versions should get their own
+            page.
+      - [ ] If doing a patch release off an existing major or minor release
+            branch, forward-port the changelog to the `main` branch.
+      - [ ] Update docs versions in `doc-versions.json` if necessary
+ - [ ] Start [release workflow](https://github.com/openbao/openbao/actions/workflows/release.yml):
+       Select the appropriate branch and set the desired release version. This
+       will stage a draft release on GitHub and upload release artifacts to it.
+ - [ ] Spot-check stage-one release artifacts:
+      - [ ] Binaries work.
+      - [ ] CoSign and GPG signatures on artifacts are valid.
+-  [ ] On failure, delete the draft release, merge necessary adjustments, and
+       retry the above two steps.
+ - [ ] Attach release notes to the release draft.
+ - [ ] Publish the release draft. This pushes the release tag and triggers
+       workflows to build & publish container images and to update repos hosted
+       on pkgs.openbao.org.
+ - [ ] Spot-check stage-two release artifacts:
+      - [ ] Container images work and have valid CoSign signatures.
+ - [ ] Share release notification announcement:
+      - [ ] OpenBao Core mailing list (cc TSC mailing list)
+      - [ ] GitHub Discussions
+      - [ ] Link from Zulip
+      - [ ] Mention in next community meeting & TSC meetings.
+ - [ ] Publish any security advisory drafts fixed in this release.
+ - [ ] Close the release milestone on GitHub.
+ - [ ] For large releases, work with the OpenSSF for a release blog post.
+ - [ ] For new major or minor versions, create a `release/<version>` branch
+       after the first release on the minor series (including beta and other
+       pre-release branches). Future features should target the next release
+       (`main` branch) but bug and security fixes can be backported.

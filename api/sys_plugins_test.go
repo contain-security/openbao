@@ -4,13 +4,11 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"testing"
-
-	"github.com/hashicorp/go-secure-stdlib/strutil"
 )
 
 func TestRegisterPlugin(t *testing.T) {
@@ -24,7 +22,7 @@ func TestRegisterPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = client.Sys().RegisterPluginWithContext(context.Background(), &RegisterPluginInput{
+	err = client.Sys().RegisterPluginWithContext(t.Context(), &RegisterPluginInput{
 		Version: "v1.0.0",
 	})
 	if err != nil {
@@ -75,7 +73,7 @@ func TestListPlugins(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp, err := client.Sys().ListPluginsWithContext(context.Background(), &tc.input)
+			resp, err := client.Sys().ListPluginsWithContext(t.Context(), &tc.input)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,7 +108,7 @@ func TestListPlugins(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !strutil.StrListContains(tc.expectedPlugins[pluginType], actual.Name) {
+				if !slices.Contains(tc.expectedPlugins[pluginType], actual.Name) {
 					t.Errorf("Did not expect to find %s in details", actual.Name)
 				}
 			}
@@ -181,7 +179,7 @@ func TestGetPlugin(t *testing.T) {
 				input.Version = tc.version
 			}
 
-			info, err := client.Sys().GetPluginWithContext(context.Background(), &input)
+			info, err := client.Sys().GetPluginWithContext(t.Context(), &input)
 			if err != nil {
 				t.Fatal(err)
 			}

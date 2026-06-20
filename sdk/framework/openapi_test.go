@@ -72,11 +72,11 @@ func TestOpenAPI_ExpandPattern(t *testing.T) {
 		outPathlets []string
 	}{
 		// A simple string without regexp metacharacters passes through as is
-		{"rekey/backup", []string{"rekey/backup"}},
+		{"rotate/root/backup", []string{"rotate/root/backup"}},
 		// A trailing regexp anchor metacharacter is removed
-		{"rekey/backup$", []string{"rekey/backup"}},
+		{"rotate/root/backup$", []string{"rotate/root/backup"}},
 		// As is a leading one
-		{"^rekey/backup", []string{"rekey/backup"}},
+		{"^rotate/root/backup", []string{"rotate/root/backup"}},
 		// Named capture groups become OpenAPI parameters
 		{"auth/(?P<path>.+?)/tune$", []string{"auth/{path}/tune"}},
 		{"auth/(?P<path>.+?)/tune/(?P<more>.*?)$", []string{"auth/{path}/tune/{more}"}},
@@ -520,6 +520,65 @@ func TestOpenAPI_Paths(t *testing.T) {
 		testPath(t, p, sp, expected("operations_list"))
 	})
 
+	t.Run("Operations - Scan Only", func(t *testing.T) {
+		p := &Path{
+			Pattern: "foo/" + GenericNameRegex("id"),
+			Fields: map[string]*FieldSchema{
+				"id": {
+					Type:        TypeString,
+					Description: "id path parameter",
+				},
+				"flavors": {
+					Type:        TypeCommaStringSlice,
+					Description: "the flavors",
+				},
+				"name": {
+					Type:        TypeNameString,
+					Default:     "Larry",
+					Description: "the name",
+				},
+				"age": {
+					Type:          TypeInt,
+					Description:   "the age",
+					AllowedValues: []interface{}{1, 2, 3},
+					Required:      true,
+					DisplayAttrs: &DisplayAttributes{
+						Name:      "Age",
+						Sensitive: true,
+						Group:     "Some Group",
+						Value:     7,
+					},
+				},
+				"x-abc-token": {
+					Type:          TypeHeader,
+					Description:   "a header value",
+					AllowedValues: []interface{}{"a", "b", "c"},
+				},
+				"format": {
+					Type:        TypeString,
+					Description: "a query param",
+					Query:       true,
+				},
+			},
+			HelpSynopsis:    "Synopsis",
+			HelpDescription: "Description",
+			Operations: map[logical.Operation]OperationHandler{
+				logical.ScanOperation: &PathOperation{
+					Summary:     "Scan Summary",
+					Description: "Scan Description",
+				},
+			},
+			DisplayAttrs: &DisplayAttributes{
+				Navigation: true,
+			},
+		}
+
+		sp := &logical.Paths{
+			Root: []string{"foo*"},
+		}
+		testPath(t, p, sp, expected("operations_scan"))
+	})
+
 	t.Run("Responses", func(t *testing.T) {
 		p := &Path{
 			Pattern:         "foo",
@@ -809,7 +868,6 @@ func TestOpenAPI_constructOperationID(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		name, test := name, test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			actual := constructOperationID(
@@ -851,7 +909,6 @@ func TestOpenAPI_hyphenatedToTitleCase(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		name, test := name, test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			actual := hyphenatedToTitleCase(test.in)
@@ -869,7 +926,6 @@ func testPath(t *testing.T, path *Path, sp *logical.Paths, expectedJSON string) 
 	if err := documentPath(path, sp, "kv", logical.TypeLogical, doc); err != nil {
 		t.Fatal(err)
 	}
-	doc.CreateOperationIDs("")
 
 	docJSON, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -889,19 +945,6 @@ func testPath(t *testing.T, path *Path, sp *logical.Paths, expectedJSON string) 
 	if diff := deep.Equal(actual, expected); diff != nil {
 		// fmt.Println(string(docJSON)) // uncomment to debug generated JSON (very helpful when fixing tests)
 		t.Fatal(diff)
-	}
-}
-
-func getPathOp(pi *OASPathItem, op string) *OASOperation {
-	switch op {
-	case "get":
-		return pi.Get
-	case "post":
-		return pi.Post
-	case "delete":
-		return pi.Delete
-	default:
-		panic("unexpected operation: " + op)
 	}
 }
 

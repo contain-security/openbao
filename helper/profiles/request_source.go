@@ -5,8 +5,10 @@ import (
 	"fmt"
 )
 
+const requestSourceName = "request"
+
 // RequestSourceBuilder allows reading inputs from past requests.
-func RequestSourceBuilder(ctx context.Context, engine *ProfileEngine, field map[string]interface{}) Source {
+func RequestSourceBuilder(engine *ProfileEngine, field map[string]interface{}) Source {
 	return &RequestSource{
 		outer: engine.outerBlockName,
 		field: field,
@@ -17,8 +19,13 @@ var _ SourceBuilder = RequestSourceBuilder
 
 func WithRequestSource() func(*ProfileEngine) {
 	return func(p *ProfileEngine) {
-		p.sourceBuilders["request"] = RequestSourceBuilder
+		p.sourceBuilders[requestSourceName] = RequestSourceBuilder
 	}
+}
+
+func HasRequestSource(engine *ProfileEngine) bool {
+	_, ok := engine.sourceBuilders[requestSourceName]
+	return ok
 }
 
 type RequestSource struct {
@@ -27,12 +34,12 @@ type RequestSource struct {
 
 	outerName     string
 	requestName   string
-	fieldSelector interface{}
+	fieldSelector []interface{}
 }
 
 var _ Source = &RequestSource{}
 
-func (s *RequestSource) Validate(_ context.Context) ([]string, []string, error) {
+func (s *RequestSource) Validate() ([]string, []string, error) {
 	var requestName string
 
 	if s.outer != "" {
@@ -65,16 +72,23 @@ func (s *RequestSource) Validate(_ context.Context) ([]string, []string, error) 
 	requestName += reqName
 
 	rawFieldSelector := s.field["field_selector"]
-
 	if present {
-		switch rawFieldSelector.(type) {
-		case string:
+		switch fieldSelector := rawFieldSelector.(type) {
+		case int, string:
+			s.fieldSelector = []interface{}{fieldSelector}
+		case []int:
+			for _, item := range fieldSelector {
+				s.fieldSelector = append(s.fieldSelector, item)
+			}
 		case []string:
+			for _, item := range fieldSelector {
+				s.fieldSelector = append(s.fieldSelector, item)
+			}
+		case []interface{}:
+			s.fieldSelector = fieldSelector
 		default:
-			return nil, nil, fmt.Errorf("unknown type for request source field 'field_selector': %T; expected either string or []string", rawFieldSelector)
+			return nil, nil, fmt.Errorf("unknown type for request source field 'field_selector': %T; expected either string, []string, or []interface{}", rawFieldSelector)
 		}
-
-		s.fieldSelector = rawFieldSelector
 	}
 
 	return []string{requestName}, nil, nil

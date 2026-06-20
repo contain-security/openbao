@@ -11,6 +11,17 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 )
 
+// Aliasing the types, as we don't want to introduce breaking changes
+// removing old rekey types.
+type (
+	RekeyInitRequest                = RotateInitRequest
+	RekeyStatusResponse             = RotateStatusResponse
+	RekeyUpdateResponse             = RotateUpdateResponse
+	RekeyRetrieveResponse           = RotateRetrieveResponse
+	RekeyVerificationStatusResponse = RotateVerificationStatusResponse
+	RekeyVerificationUpdateResponse = RotateVerificationUpdateResponse
+)
+
 // Deprecated: use RotateRootStatus instead.
 func (c *Sys) RekeyStatus() (*RekeyStatusResponse, error) {
 	return c.RekeyStatusWithContext(context.Background())
@@ -27,7 +38,7 @@ func (c *Sys) RekeyStatusWithContext(ctx context.Context) (*RekeyStatusResponse,
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyStatusResponse
 	err = resp.DecodeJSON(&result)
@@ -50,7 +61,7 @@ func (c *Sys) RekeyRecoveryKeyStatusWithContext(ctx context.Context) (*RekeyStat
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyStatusResponse
 	err = resp.DecodeJSON(&result)
@@ -73,7 +84,7 @@ func (c *Sys) RekeyVerificationStatusWithContext(ctx context.Context) (*RekeyVer
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyVerificationStatusResponse
 	err = resp.DecodeJSON(&result)
@@ -96,7 +107,7 @@ func (c *Sys) RekeyRecoveryKeyVerificationStatusWithContext(ctx context.Context)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyVerificationStatusResponse
 	err = resp.DecodeJSON(&result)
@@ -122,7 +133,7 @@ func (c *Sys) RekeyInitWithContext(ctx context.Context, config *RekeyInitRequest
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyStatusResponse
 	err = resp.DecodeJSON(&result)
@@ -148,7 +159,7 @@ func (c *Sys) RekeyRecoveryKeyInitWithContext(ctx context.Context, config *Rekey
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyStatusResponse
 	err = resp.DecodeJSON(&result)
@@ -169,7 +180,7 @@ func (c *Sys) RekeyCancelWithContext(ctx context.Context) error {
 
 	resp, err := c.c.rawRequestWithContext(ctx, r)
 	if err == nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 	return err
 }
@@ -188,7 +199,7 @@ func (c *Sys) RekeyRecoveryKeyCancelWithContext(ctx context.Context) error {
 
 	resp, err := c.c.rawRequestWithContext(ctx, r)
 	if err == nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 	return err
 }
@@ -207,7 +218,7 @@ func (c *Sys) RekeyVerificationCancelWithContext(ctx context.Context) error {
 
 	resp, err := c.c.rawRequestWithContext(ctx, r)
 	if err == nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 	return err
 }
@@ -226,7 +237,7 @@ func (c *Sys) RekeyRecoveryKeyVerificationCancelWithContext(ctx context.Context)
 
 	resp, err := c.c.rawRequestWithContext(ctx, r)
 	if err == nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 	return err
 }
@@ -255,7 +266,7 @@ func (c *Sys) RekeyUpdateWithContext(ctx context.Context, shard, nonce string) (
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyUpdateResponse
 	err = resp.DecodeJSON(&result)
@@ -286,7 +297,7 @@ func (c *Sys) RekeyRecoveryKeyUpdateWithContext(ctx context.Context, shard, nonc
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyUpdateResponse
 	err = resp.DecodeJSON(&result)
@@ -309,7 +320,7 @@ func (c *Sys) RekeyRetrieveBackupWithContext(ctx context.Context) (*RekeyRetriev
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	secret, err := ParseSecret(resp.Body)
 	if err != nil {
@@ -344,7 +355,7 @@ func (c *Sys) RekeyRetrieveRecoveryBackupWithContext(ctx context.Context) (*Reke
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	secret, err := ParseSecret(resp.Body)
 	if err != nil {
@@ -377,7 +388,7 @@ func (c *Sys) RekeyDeleteBackupWithContext(ctx context.Context) error {
 
 	resp, err := c.c.rawRequestWithContext(ctx, r)
 	if err == nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 
 	return err
@@ -397,7 +408,7 @@ func (c *Sys) RekeyDeleteRecoveryBackupWithContext(ctx context.Context) error {
 
 	resp, err := c.c.rawRequestWithContext(ctx, r)
 	if err == nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 
 	return err
@@ -427,7 +438,7 @@ func (c *Sys) RekeyVerificationUpdateWithContext(ctx context.Context, shard, non
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyVerificationUpdateResponse
 	err = resp.DecodeJSON(&result)
@@ -458,61 +469,9 @@ func (c *Sys) RekeyRecoveryKeyVerificationUpdateWithContext(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result RekeyVerificationUpdateResponse
 	err = resp.DecodeJSON(&result)
 	return &result, err
-}
-
-type RekeyInitRequest struct {
-	SecretShares        int      `json:"secret_shares"`
-	SecretThreshold     int      `json:"secret_threshold"`
-	StoredShares        int      `json:"stored_shares"`
-	PGPKeys             []string `json:"pgp_keys"`
-	Backup              bool
-	RequireVerification bool `json:"require_verification"`
-}
-
-type RekeyStatusResponse struct {
-	Nonce                string   `json:"nonce"`
-	Started              bool     `json:"started"`
-	T                    int      `json:"t"`
-	N                    int      `json:"n"`
-	Progress             int      `json:"progress"`
-	Required             int      `json:"required"`
-	PGPFingerprints      []string `json:"pgp_fingerprints"`
-	Backup               bool     `json:"backup"`
-	VerificationRequired bool     `json:"verification_required"`
-	VerificationNonce    string   `json:"verification_nonce"`
-}
-
-type RekeyUpdateResponse struct {
-	Nonce                string   `json:"nonce"`
-	Complete             bool     `json:"complete"`
-	Keys                 []string `json:"keys"`
-	KeysB64              []string `json:"keys_base64"`
-	PGPFingerprints      []string `json:"pgp_fingerprints"`
-	Backup               bool     `json:"backup"`
-	VerificationRequired bool     `json:"verification_required"`
-	VerificationNonce    string   `json:"verification_nonce,omitempty"`
-}
-
-type RekeyRetrieveResponse struct {
-	Nonce   string              `json:"nonce" mapstructure:"nonce"`
-	Keys    map[string][]string `json:"keys" mapstructure:"keys"`
-	KeysB64 map[string][]string `json:"keys_base64" mapstructure:"keys_base64"`
-}
-
-type RekeyVerificationStatusResponse struct {
-	Nonce    string `json:"nonce"`
-	Started  bool   `json:"started"`
-	T        int    `json:"t"`
-	N        int    `json:"n"`
-	Progress int    `json:"progress"`
-}
-
-type RekeyVerificationUpdateResponse struct {
-	Nonce    string `json:"nonce"`
-	Complete bool   `json:"complete"`
 }

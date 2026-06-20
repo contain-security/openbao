@@ -88,6 +88,7 @@ const sidebars: SidebarsConfig = {
         "system/config-ui",
         "system/decode-token",
         "system/generate-recovery-token",
+        "system/generate-root-token",
         "system/generate-root",
         "system/health",
         "system/host-info",
@@ -95,14 +96,13 @@ const sidebars: SidebarsConfig = {
         "system/init",
         "system/internal-counters",
         {
-          "sys/internal/inspect": [
+          "/sys/internal/inspect": [
             "system/inspect/index",
             "system/inspect/request",
             "system/inspect/router",
           ],
         },
         "system/internal-specs-openapi",
-        "system/internal-ui-feature",
         "system/internal-ui-mounts",
         "system/internal-ui-namespaces",
         "system/internal-ui-resultant-acl",
@@ -128,13 +128,23 @@ const sidebars: SidebarsConfig = {
         "system/rekey",
         "system/rekey-recovery-key",
         "system/remount",
-        "system/rotate",
-        "system/rotate-config",
+        {
+          "/sys/rotate": [
+            "system/rotate/index",
+            "system/rotate/keyring",
+            "system/rotate/keyring-config",
+            "system/rotate/root",
+            "system/rotate/init",
+            "system/rotate/update",
+            "system/rotate/verify",
+            "system/rotate/backup",
+          ],
+        },
         "system/seal",
         "system/seal-status",
         "system/step-down",
         {
-          "sys/storage": [
+          "/sys/storage": [
             "system/storage/index",
             "system/storage/raft",
             "system/storage/raftautopilot",
@@ -144,6 +154,7 @@ const sidebars: SidebarsConfig = {
         "system/unseal",
         "system/user-lockout",
         "system/version-history",
+        "system/workflows",
         "system/wrapping-lookup",
         "system/wrapping-rewrap",
         "system/wrapping-unwrap",

@@ -6,26 +6,26 @@ package vault
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/hashicorp/go-secure-stdlib/base62"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
-	"go.uber.org/atomic"
 )
 
 // GenerateRecoveryTokenStrategy is the strategy used to generate a
 // recovery token
-func GenerateRecoveryTokenStrategy(token *atomic.String) GenerateRootStrategy {
+func GenerateRecoveryTokenStrategy(token *atomic.Value) GenerateRootStrategy {
 	return &generateRecoveryToken{token: token}
 }
 
 // generateRecoveryToken implements the GenerateRootStrategy and is in
 // charge of creating recovery tokens.
 type generateRecoveryToken struct {
-	token *atomic.String
+	token *atomic.Value
 }
 
 func (g *generateRecoveryToken) authenticate(ctx context.Context, c *Core, combinedKey []byte) error {
-	key, err := c.unsealKeyToRootKeyPostUnseal(ctx, combinedKey)
+	key, err := c.sealManager.unsealKeyToRootKey(ctx, c.seal, combinedKey, true, false)
 	if err != nil {
 		return fmt.Errorf("unable to authenticate: %w", err)
 	}

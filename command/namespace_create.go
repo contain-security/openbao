@@ -5,9 +5,13 @@ package command
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/hashicorp/cli"
+	"github.com/openbao/openbao/api/v2"
+	"github.com/openbao/openbao/helper/pgpkeys"
+	"github.com/openbao/openbao/sdk/v2/helper/structtomap"
 	"github.com/posener/complete"
 )
 
@@ -20,6 +24,10 @@ type NamespaceCreateCommand struct {
 	*BaseCommand
 
 	flagCustomMetadata map[string]string
+	flagSealConfigPath string
+	flagKeyShares      int
+	flagKeyThreshold   int
+	flagPGPKeys        []string
 }
 
 func (c *NamespaceCreateCommand) Synopsis() string {
@@ -42,6 +50,14 @@ Usage: bao namespace create [options] PATH
 
       $ bao namespace create -namespace=ns1 ns2
 
+  Create a sealable namespace with Shamir seal:
+
+      $ bao namespace create -key-shares=5 -key-threshold=3 ns1
+
+  Create a sealable namespace from a HCL seal config file:
+
+      $ bao namespace create -seal=seal.hcl ns1
+
 ` + c.Flags().Help()
 
 	return strings.TrimSpace(helpText)
@@ -57,6 +73,43 @@ func (c *NamespaceCreateCommand) Flags() *FlagSets {
 		Default: map[string]string{},
 		Usage: "Specifies arbitrary key=value metadata meant to describe a namespace." +
 			"This can be specified multiple times to add multiple pieces of metadata.",
+	})
+
+	f = set.NewFlagSet("Seal Options")
+	f.StringVar(&StringVar{
+		Name:       "seal",
+		Target:     &c.flagSealConfigPath,
+		Completion: complete.PredictFilesSet([]string{"*.hcl", "*.json"}),
+		Usage:      "Path to a HCL file with exactly one seal stanza.",
+	})
+
+	f.IntVar(&IntVar{
+		Name:       "key-shares",
+		Aliases:    []string{"n"},
+		Target:     &c.flagKeyShares,
+		Completion: complete.PredictAnything,
+		Usage: "Number of key shares to split the generated root key into. " +
+			"This is the number of \"unseal keys\" to generate.",
+	})
+
+	f.IntVar(&IntVar{
+		Name:       "key-threshold",
+		Aliases:    []string{"t"},
+		Target:     &c.flagKeyThreshold,
+		Completion: complete.PredictAnything,
+		Usage: "Number of key shares required to reconstruct the root key. " +
+			"This must be less than or equal to -key-shares.",
+	})
+
+	f.VarFlag(&VarFlag{
+		Name:       "pgp-keys",
+		Value:      (*pgpkeys.PubKeyFilesFlag)(&c.flagPGPKeys),
+		Completion: complete.PredictAnything,
+		Usage: "Comma-separated list of paths to files on disk containing " +
+			"public PGP keys OR a comma-separated list of Keybase usernames using " +
+			"the format \"keybase:<username>\". When supplied, the generated " +
+			"unseal keys will be encrypted and base64-encoded in the order " +
+			"specified in this list. The number of entries must match -key-shares.",
 	})
 
 	return set
@@ -96,20 +149,62 @@ func (c *NamespaceCreateCommand) Run(args []string) int {
 		return 2
 	}
 
-	data := map[string]interface{}{
-		"custom_metadata": c.flagCustomMetadata,
+	input := &api.CreateNamespaceInput{
+		CustomMetadata: c.flagCustomMetadata,
+		PGPKeys:        c.flagPGPKeys,
 	}
 
-	secret, err := client.Logical().Write("sys/namespaces/"+namespacePath, data)
+	if c.flagSealConfigPath != "" {
+		hcl, err := os.ReadFile(c.flagSealConfigPath)
+		if err != nil {
+			c.UI.Error(fmt.Sprintf("Error reading seal config file: %s", err))
+			return 2
+		}
+		input.Seal = string(hcl)
+	} else if c.flagKeyShares != 0 || c.flagKeyThreshold != 0 {
+		input.Seal = fmt.Sprintf("seal \"shamir\" {\n    shares = %d\n    threshold = %d\n}",
+			c.flagKeyShares, c.flagKeyThreshold)
+	}
+
+	resp, err := client.Sys().CreateNamespace(namespacePath, input)
 	if err != nil {
 		c.UI.Error(fmt.Sprintf("Error creating namespace: %s", err))
 		return 2
 	}
 
-	// Handle single field output
-	if c.flagField != "" {
-		return PrintRawField(c.UI, secret, c.flagField)
+	// Only print the human-facing seal initialization message if we're in table
+	// output mode to not disturb serialized formats such as JSON when captured
+	// from stdout.
+	isTable := Format(c.UI) == "table"
+
+	if isTable && resp != nil && len(resp.KeyShares) != 0 {
+		for i, key := range resp.KeyShares {
+			c.UI.Output(fmt.Sprintf("Unseal Key %d: %s", i+1, key))
+		}
+		c.UI.Output("")
+		c.UI.Output(wrapAtLength(fmt.Sprintf(
+			"Namespace initialized with %d key shares and a key threshold of %d. Please "+
+				"securely distribute the key shares printed above. When the namespace is "+
+				"re-sealed, you must supply at least %d of these keys to unseal it.",
+			len(resp.KeyShares),
+			resp.KeyThreshold,
+			resp.KeyThreshold,
+		)))
+		c.UI.Output("")
 	}
 
-	return OutputSecret(c.UI, secret)
+	out := structtomap.Map(resp)
+
+	if c.flagField != "" {
+		return PrintRawField(c.UI, out, c.flagField)
+	}
+
+	if isTable || len(resp.KeyShares) == 0 {
+		// These were either already printed above or are set to zero values;
+		// remove them to reduce clutter.
+		delete(out, "key_shares")
+		delete(out, "key_threshold")
+	}
+
+	return OutputData(c.UI, out)
 }

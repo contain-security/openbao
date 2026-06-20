@@ -5,7 +5,6 @@ package jwtauth
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -38,20 +37,26 @@ func (a *azureServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.URL.Path {
 	case "/.well-known/openid-configuration":
-		w.Write([]byte(strings.Replace(`
+		_, err := w.Write([]byte(strings.ReplaceAll(`
 			{
 				"issuer": "%s",
 				"authorization_endpoint": "%s/auth",
 				"token_endpoint": "%s/oauth2/v2.0/token",
 				"jwks_uri": "%s/certs",
 				"userinfo_endpoint": "%s/userinfo"
-			}`, "%s", a.server.URL, -1)))
+			}`, "%s", a.server.URL)))
+		if err != nil {
+			a.t.Fatal(err)
+		}
 	case "/getMemberObjects":
 		groups := azureGroups{
 			Value: []interface{}{"group1", "group2"},
 		}
 		gBytes, _ := json.Marshal(groups)
-		w.Write(gBytes)
+		_, err := w.Write(gBytes)
+		if err != nil {
+			a.t.Fatal(err)
+		}
 	default:
 		a.t.Fatalf("unexpected path: %q", r.URL.Path)
 	}
@@ -79,7 +84,7 @@ func TestLogin_fetchGroups(t *testing.T) {
 	require.NoError(t, err)
 
 	b, storage := getBackend(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	data := map[string]interface{}{
 		"oidc_discovery_url":    aServer.server.URL,
@@ -101,7 +106,7 @@ func TestLogin_fetchGroups(t *testing.T) {
 		Data:      data,
 	}
 
-	resp, err := b.HandleRequest(context.Background(), req)
+	resp, err := b.HandleRequest(t.Context(), req)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("err:%v resp:%#v\n", err, resp)
 	}
@@ -120,7 +125,7 @@ func TestLogin_fetchGroups(t *testing.T) {
 		Data:      data,
 	}
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("err:%v resp:%#v\n", err, resp)
 	}

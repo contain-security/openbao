@@ -4,7 +4,6 @@
 package quotas
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -21,10 +20,10 @@ func TestQuotas_MountPathOverwrite(t *testing.T) {
 	require.NoError(t, err)
 
 	quota := NewRateLimitQuota("tq", "", "kv1/", "", "", 10, time.Second, 0, false)
-	require.NoError(t, qm.SetQuota(context.Background(), TypeRateLimit.String(), quota, false))
+	require.NoError(t, qm.SetQuota(t.Context(), TypeRateLimit.String(), quota))
 	quota = quota.Clone().(*RateLimitQuota)
 	quota.MountPath = "kv2/"
-	require.NoError(t, qm.SetQuota(context.Background(), TypeRateLimit.String(), quota, false))
+	require.NoError(t, qm.SetQuota(t.Context(), TypeRateLimit.String(), quota))
 
 	q, err := qm.QueryQuota(&Request{
 		Type:      TypeRateLimit,
@@ -33,7 +32,7 @@ func TestQuotas_MountPathOverwrite(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, q)
 
-	require.NoError(t, qm.DeleteQuota(context.Background(), TypeRateLimit.String(), "tq"))
+	require.NoError(t, qm.DeleteQuota(t.Context(), TypeRateLimit.String(), "tq"))
 
 	q, err = qm.QueryQuota(&Request{
 		Type:      TypeRateLimit,
@@ -50,7 +49,7 @@ func TestQuotas_Precedence(t *testing.T) {
 	setQuotaFunc := func(t *testing.T, name, nsPath, mountPath, pathSuffix, role string) Quota {
 		t.Helper()
 		quota := NewRateLimitQuota(name, nsPath, mountPath, pathSuffix, role, 10, time.Second, 0, false)
-		require.NoError(t, qm.SetQuota(context.Background(), TypeRateLimit.String(), quota, true))
+		require.NoError(t, qm.SetQuota(t.Context(), TypeRateLimit.String(), quota))
 		return quota
 	}
 
@@ -139,7 +138,7 @@ func TestQuotas_QueryResolveRole_RateLimitQuotas(t *testing.T) {
 
 	// Create a non-role-based RLQ on mount1/ and make sure it doesn't require role resolution
 	rlq := NewRateLimitQuota("tq", rlqReq.NamespacePath, rlqReq.MountPath, rlqReq.Path, rlqReq.Role, 10, 1*time.Minute, 10*time.Second, false)
-	require.NoError(t, qm.SetQuota(context.Background(), TypeRateLimit.String(), rlq, false))
+	require.NoError(t, qm.SetQuota(t.Context(), TypeRateLimit.String(), rlq))
 
 	required, err = qm.QueryResolveRoleQuotas(rlqReq)
 	require.NoError(t, err)
@@ -148,7 +147,7 @@ func TestQuotas_QueryResolveRole_RateLimitQuotas(t *testing.T) {
 	// Create a role-based RLQ on mount1/ and make sure it requires role resolution
 	rlqReq.Role = "test"
 	rlq = NewRateLimitQuota("tq", rlqReq.NamespacePath, rlqReq.MountPath, rlqReq.Path, rlqReq.Role, 10, 1*time.Minute, 10*time.Second, false)
-	require.NoError(t, qm.SetQuota(context.Background(), TypeRateLimit.String(), rlq, false))
+	require.NoError(t, qm.SetQuota(t.Context(), TypeRateLimit.String(), rlq))
 
 	required, err = qm.QueryResolveRoleQuotas(rlqReq)
 	require.NoError(t, err)
@@ -164,9 +163,7 @@ func TestQuotas_QueryResolveRole_RateLimitQuotas(t *testing.T) {
 func TestQuotas_HandleNamespaceDeletion(t *testing.T) {
 	qm, err := NewManager(logging.NewVaultLogger(log.Trace), metricsutil.BlackholeSink(), true)
 	require.NoError(t, err)
-
-	err = qm.Setup(context.Background(), new(logical.InmemStorage))
-	require.NoError(t, err)
+	require.NoError(t, qm.Setup(t.Context(), new(logical.InmemStorage)))
 
 	rlqs := []*RateLimitQuota{
 		NewRateLimitQuota("namespace-only", "foo/", "", "", "", 10, time.Minute, time.Second, false),
@@ -174,12 +171,10 @@ func TestQuotas_HandleNamespaceDeletion(t *testing.T) {
 	}
 
 	for _, rlq := range rlqs {
-		err := qm.SetQuota(context.Background(), TypeRateLimit.String(), rlq, false)
-		require.NoError(t, err)
+		require.NoError(t, qm.SetQuota(t.Context(), TypeRateLimit.String(), rlq))
 	}
 
-	err = qm.HandleNamespaceDeletion(context.Background(), "foo/")
-	require.NoError(t, err)
+	require.NoError(t, qm.HandleNamespaceDeletion(t.Context(), "foo/"))
 
 	q, err := qm.QuotaByName(TypeRateLimit.String(), "namespace-only")
 	require.NoError(t, err)
@@ -195,7 +190,7 @@ func TestQuotas_HandleBackendDisabling(t *testing.T) {
 	qm, err := NewManager(logging.NewVaultLogger(log.Trace), metricsutil.BlackholeSink(), true)
 	require.NoError(t, err)
 
-	err = qm.Setup(context.Background(), new(logical.InmemStorage))
+	err = qm.Setup(t.Context(), new(logical.InmemStorage))
 	require.NoError(t, err)
 
 	rlqs := []*RateLimitQuota{
@@ -206,11 +201,11 @@ func TestQuotas_HandleBackendDisabling(t *testing.T) {
 	}
 
 	for _, rlq := range rlqs {
-		err := qm.SetQuota(context.Background(), TypeRateLimit.String(), rlq, false)
+		err := qm.SetQuota(t.Context(), TypeRateLimit.String(), rlq)
 		require.NoError(t, err)
 	}
 
-	err = qm.HandleBackendDisabling(context.Background(), "foo/", "sys/")
+	err = qm.HandleBackendDisabling(t.Context(), "foo/", "sys/")
 	require.NoError(t, err)
 
 	for _, name := range []string{"namespace-mount", "namespace-mount-path", "namespace-mount-role"} {

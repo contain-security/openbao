@@ -8,9 +8,12 @@ description: |-
 # `listener` stanza
 
 The `listener` stanza configures the addresses and ports on which OpenBao will
-respond to requests. At this time, there are two listeners: 
+respond to requests. At this time, there are two listeners:
 - [TCP][tcp]
 - [Unix Domain Socket][unix]
 
-[tcp]: /docs/configuration/listener/tcp
-[unix]: /docs/configuration/listener/unix
+There is a [shared config][shared] that is common to all listeners.
+
+[tcp]: tcp.mdx
+[unix]: unix.mdx
+[shared]: shared.mdx

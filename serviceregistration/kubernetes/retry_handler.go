@@ -49,10 +49,8 @@ func (r *retryHandler) Run(shutdownCh <-chan struct{}, wait *sync.WaitGroup) {
 	r.setInitialState(shutdownCh)
 
 	// Run this in a go func so this call doesn't block.
-	wait.Add(1)
-	go func() {
+	wait.Go(func() {
 		// Make sure Vault will give us time to finish up here.
-		defer wait.Done()
 
 		var g run.Group
 
@@ -80,7 +78,7 @@ func (r *retryHandler) Run(shutdownCh <-chan struct{}, wait *sync.WaitGroup) {
 		if err := g.Run(); err != nil {
 			r.logger.Error("error encountered during periodic state update", "error", err)
 		}
-	}()
+	})
 }
 
 func (r *retryHandler) setInitialState(shutdownCh <-chan struct{}) {
@@ -91,9 +89,7 @@ func (r *retryHandler) setInitialState(shutdownCh <-chan struct{}) {
 
 	go func() {
 		if err := r.setInitialStateInternal(); err != nil {
-			if r.logger.IsWarn() {
-				r.logger.Warn(fmt.Sprintf("unable to set initial state due to %s, will retry", err.Error()))
-			}
+			r.logger.Warn("unable to set initial state due; will retry", "err", err)
 		}
 		close(doneCh)
 	}()
@@ -115,18 +111,14 @@ func (r *retryHandler) Notify(patch *client.Patch) {
 	// received could get smashed by a late-arriving initial state.
 	// We will store this to retry it when appropriate.
 	if !r.initialStateSet {
-		if r.logger.IsWarn() {
-			r.logger.Warn(fmt.Sprintf("cannot notify of present state for %s because initial state is unset", patch.Path))
-		}
+		r.logger.Warn("cannot notify of present state because initial state is unset", "path", patch.Path)
 		r.patchesToRetry[patch.Path] = patch
 		return
 	}
 
 	// Initial state has been sent, so it's OK to attempt a patch immediately.
 	if err := r.client.PatchPod(r.namespace, r.podName, patch); err != nil {
-		if r.logger.IsWarn() {
-			r.logger.Warn(fmt.Sprintf("unable to update state for %s due to %s, will retry", patch.Path, err.Error()))
-		}
+		r.logger.Warn("unable to update state; will retry", "path", patch.Path, "err", err)
 		r.patchesToRetry[patch.Path] = patch
 	}
 }
@@ -229,9 +221,7 @@ func (r *retryHandler) updateState() {
 	// received could get smashed by a late-arriving initial state.
 	// If the state is already set, this is a no-op.
 	if err := r.setInitialStateInternal(); err != nil {
-		if r.logger.IsWarn() {
-			r.logger.Warn(fmt.Sprintf("unable to set initial state due to %s, will retry", err.Error()))
-		}
+		r.logger.Warn("unable to set initial state due; will retry", "err", err)
 		// On failure, we leave the initial state func populated for
 		// the next retry.
 		return
@@ -250,9 +240,7 @@ func (r *retryHandler) updateState() {
 	}
 
 	if err := r.client.PatchPod(r.namespace, r.podName, patches...); err != nil {
-		if r.logger.IsWarn() {
-			r.logger.Warn(fmt.Sprintf("unable to update state for due to %s, will retry", err.Error()))
-		}
+		r.logger.Warn("unable to update state; will retry", "err", err)
 		return
 	}
 	r.patchesToRetry = make(map[string]*client.Patch)

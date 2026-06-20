@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"reflect"
 	"testing"
 
@@ -92,7 +91,7 @@ path "secret/foo" {
 
 	userpassToken := secret.Auth.ClientToken
 
-	secret, err = client.Logical().Write("auth/token/lookup", map[string]interface{}{
+	_, err = client.Logical().Write("auth/token/lookup", map[string]interface{}{
 		"token": userpassToken,
 	})
 	if err != nil {
@@ -127,17 +126,10 @@ path "secret/foo" {
 	defer client.SetToken(originalToken)
 	client.SetToken(userpassToken)
 
-	// Create a GET request and set the MFA header containing the generated
-	// TOTP passcode
-	secretRequest := client.NewRequest("GET", "/v1/secret/foo")
-	secretRequest.Headers = make(http.Header)
-	// mfaHeaderValue := "my_duo:" + totpPasscode
-	// secretRequest.Headers.Add("X-Vault-MFA", mfaHeaderValue)
-
 	// Make the request
-	resp, err := client.RawRequest(secretRequest)
+	resp, err := client.Logical().ReadRaw("secret/foo")
 	if resp != nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 	if resp != nil && resp.StatusCode == 403 {
 		return errors.New("failed to read the secret")
@@ -175,13 +167,13 @@ func TestInteg_LoginMFADUO(t *testing.T) {
 		t.Fatalf("failed to enable userpass auth: %v", err)
 	}
 
-	err = mfaGenerateLoginDUOTest(client)
+	err = mfaGenerateLoginDUOTest(t.Context(), client)
 	if err != nil {
 		t.Fatalf("DUO verification failed. error: %s", err)
 	}
 }
 
-func mfaGenerateLoginDUOTest(client *api.Client) error {
+func mfaGenerateLoginDUOTest(ctx context.Context, client *api.Client) error {
 	var err error
 
 	auths, err := client.Sys().ListAuth()
@@ -276,7 +268,7 @@ func mfaGenerateLoginDUOTest(client *api.Client) error {
 	}
 
 	// validation
-	secret, err = client.Sys().MFAValidateWithContext(context.Background(),
+	secret, err = client.Sys().MFAValidateWithContext(ctx,
 		secret.Auth.MFARequirement.MFARequestID,
 		map[string]interface{}{
 			methodID: []string{},

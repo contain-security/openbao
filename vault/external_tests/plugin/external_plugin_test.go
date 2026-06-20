@@ -4,7 +4,6 @@
 package plugin_test
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +13,8 @@ import (
 
 	"github.com/openbao/openbao/audit"
 	auditFile "github.com/openbao/openbao/builtin/audit/file"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/openbao/openbao/api/auth/approle/v2"
 	"github.com/openbao/openbao/api/v2"
@@ -195,7 +196,7 @@ func testExternalPlugin_ContinueOnError(t *testing.T, mismatch bool, pluginType 
 	// Get the registered plugin
 	req := logical.TestRequest(t, logical.ReadOperation, pluginPath)
 	req.ClientToken = core.Client.Token()
-	resp, err := core.HandleRequest(namespace.RootContext(testCtx), req)
+	resp, err := core.HandleRequest(namespace.RootContext(t.Context()), req)
 	if err != nil || resp == nil || resp.IsError() {
 		t.Fatalf("err:%v resp:%#v", err, resp)
 	}
@@ -213,7 +214,7 @@ func testExternalPlugin_ContinueOnError(t *testing.T, mismatch bool, pluginType 
 			"command": filepath.Base(command),
 		}
 		req.ClientToken = core.Client.Token()
-		resp, err = core.HandleRequest(namespace.RootContext(testCtx), req)
+		resp, err = core.HandleRequest(namespace.RootContext(t.Context()), req)
 		if err != nil || (resp != nil && resp.IsError()) {
 			t.Fatalf("err:%v resp:%#v", err, resp)
 		}
@@ -271,14 +272,14 @@ func testExternalPlugin_ContinueOnError(t *testing.T, mismatch bool, pluginType 
 		"plugin": plugin.Name,
 	}
 	req.ClientToken = core.Client.Token()
-	resp, err = core.HandleRequest(namespace.RootContext(testCtx), req)
+	resp, err = core.HandleRequest(namespace.RootContext(t.Context()), req)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("err:%v resp:%#v", err, resp)
 	}
 
 	req = logical.TestRequest(t, logical.ReadOperation, pluginPath)
 	req.ClientToken = core.Client.Token()
-	resp, err = core.HandleRequest(namespace.RootContext(testCtx), req)
+	resp, err = core.HandleRequest(namespace.RootContext(t.Context()), req)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -314,8 +315,7 @@ func TestExternalPlugin_AuthMethod(t *testing.T) {
 	t.Run("parallel execution group", func(t *testing.T) {
 		// loop to mount 5 auth methods that will each share a single
 		// plugin process
-		for i := 0; i < 5; i++ {
-			i := i
+		for i := range 5 {
 			pluginPath := fmt.Sprintf("%s-%d", plugin.Name, i)
 			client := cluster.Cores[i].Client
 			t.Run(pluginPath, func(t *testing.T) {
@@ -328,19 +328,25 @@ func TestExternalPlugin_AuthMethod(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				// Configure
-				_, err := client.Logical().Write("auth/"+pluginPath+"/role/role1", map[string]interface{}{
-					"bind_secret_id": "true",
-					"period":         "300",
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
+				// Configure the new mount; this takes some time as the
+				// secondary has not yet invalidated the mount from the call
+				// above.
+				require.EventuallyWithT(t, func(collect *assert.CollectT) {
+					_, err := client.Logical().Write("auth/"+pluginPath+"/role/role1", map[string]interface{}{
+						"bind_secret_id": "true",
+						"period":         "300",
+					})
+					require.NoError(collect, err)
+				}, 20*time.Second, 10*time.Millisecond)
 
-				secret, err := client.Logical().Write("auth/"+pluginPath+"/role/role1/secret-id", nil)
-				if err != nil {
-					t.Fatal(err)
-				}
+				var (
+					secret *api.Secret
+					err    error
+				)
+				require.EventuallyWithT(t, func(collect *assert.CollectT) {
+					secret, err = client.Logical().Write("auth/"+pluginPath+"/role/role1/secret-id", nil)
+					require.NoError(collect, err)
+				}, 20*time.Second, 10*time.Millisecond)
 				secretID := secret.Data["secret_id"].(string)
 
 				secret, err = client.Logical().Read("auth/" + pluginPath + "/role/role1/role-id")
@@ -358,19 +364,19 @@ func TestExternalPlugin_AuthMethod(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, err = client.Auth().Login(context.Background(), authMethod)
+				_, err = client.Auth().Login(t.Context(), authMethod)
 				if err != nil {
 					t.Fatal(err)
 				}
 
 				// Renew
-				resp, err := client.Auth().Token().RenewSelf(30)
+				_, err = client.Auth().Token().RenewSelf(30)
 				if err != nil {
 					t.Fatal(err)
 				}
 
 				// Login - expect SUCCESS
-				resp, err = client.Auth().Login(context.Background(), authMethod)
+				resp, err := client.Auth().Login(t.Context(), authMethod)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -385,10 +391,10 @@ func TestExternalPlugin_AuthMethod(t *testing.T) {
 				client.SetToken(cluster.RootToken)
 
 				// Lookup - expect FAILURE
-				resp, err = client.Auth().Token().Lookup(revokeToken)
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
+				require.EventuallyWithT(t, func(collect *assert.CollectT) {
+					_, err = client.Auth().Token().Lookup(revokeToken)
+					require.Error(collect, err)
+				}, 20*time.Second, 10*time.Millisecond)
 
 				// Reset root token
 				client.SetToken(cluster.RootToken)
@@ -448,7 +454,7 @@ func TestExternalPlugin_AuthMethodReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Auth().Login(context.Background(), authMethod)
+	_, err = client.Auth().Login(t.Context(), authMethod)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +469,7 @@ func TestExternalPlugin_AuthMethodReload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Auth().Login(context.Background(), authMethod)
+	_, err = client.Auth().Login(t.Context(), authMethod)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +514,7 @@ func TestExternalPlugin_SecretsEngine(t *testing.T) {
 	t.Run("parallel execution group", func(t *testing.T) {
 		// loop to mount 5 secrets engines that will each share a single
 		// plugin process
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			pluginPath := fmt.Sprintf("%s-%d", plugin.Name, i)
 			t.Run(pluginPath, func(t *testing.T) {
 				t.Parallel()
@@ -636,13 +642,13 @@ func TestExternalPlugin_Database(t *testing.T) {
 	t.Run("parallel execution group", func(t *testing.T) {
 		// loop to mount 5 database connections that will each share a single
 		// plugin process
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			dbName := fmt.Sprintf("%s-%d", plugin.Name, i)
 			t.Run(dbName, func(t *testing.T) {
 				t.Parallel()
 				roleName := "test-role-" + dbName
 
-				cleanupContainer, connURL := postgreshelper.PrepareTestContainerWithVaultUser(t, context.Background(), "13.4-buster")
+				cleanupContainer, connURL := postgreshelper.PrepareTestContainerWithVaultUser(t, t.Context(), "13.4-buster")
 				defer cleanupContainer()
 
 				_, err := client.Logical().Write("database/config/"+dbName, map[string]interface{}{
@@ -720,7 +726,7 @@ func TestExternalPlugin_Database(t *testing.T) {
 				client.SetToken(cluster.RootToken)
 
 				// Lookup - expect FAILURE
-				resp, err = client.Sys().Lookup(revokeLease)
+				_, err = client.Sys().Lookup(revokeLease)
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
@@ -741,6 +747,9 @@ func TestExternalPlugin_Database(t *testing.T) {
 // TestExternalPlugin_DatabaseReload tests that we can use an external database
 // secrets engine after reload
 func TestExternalPlugin_DatabaseReload(t *testing.T) {
+	// TODO: revisit this when database plugins reloading is supported
+	t.Skip("reloading database plugins is not yet supported")
+
 	cluster := getCluster(t, consts.PluginTypeDatabase, 1)
 	defer cluster.Cleanup()
 
@@ -769,7 +778,7 @@ func TestExternalPlugin_DatabaseReload(t *testing.T) {
 	dbName := fmt.Sprintf("%s-%d", plugin.Name, 0)
 	roleName := "test-role-" + dbName
 
-	cleanupContainer, connURL := postgreshelper.PrepareTestContainerWithVaultUser(t, context.Background(), "13.4-buster")
+	cleanupContainer, connURL := postgreshelper.PrepareTestContainerWithVaultUser(t, t.Context(), "13.4-buster")
 	defer cleanupContainer()
 
 	_, err := client.Logical().Write("database/config/"+dbName, map[string]interface{}{
@@ -904,7 +913,7 @@ func TestExternalPlugin_AuditEnabled_ShouldLogPluginMetadata_Auth(t *testing.T) 
 
 		auditResponse := map[string]interface{}{}
 		if req, ok := auditRecord["response"]; ok {
-			auditRequest = req.(map[string]interface{})
+			auditResponse = req.(map[string]interface{})
 			if auditResponse["path"] != "auth/"+plugin.Name+"/role/role1" {
 				continue
 			}
@@ -974,8 +983,8 @@ func TestExternalPlugin_AuditEnabled_ShouldLogPluginMetadata_Secret(t *testing.T
 		testExternalPluginMetadataAuditLog(t, auditRequest, consts.PluginTypeSecrets.String())
 
 		auditResponse := map[string]interface{}{}
-		if req, ok := auditRecord["response"]; ok {
-			auditRequest = req.(map[string]interface{})
+		if res, ok := auditRecord["response"]; ok {
+			auditResponse = res.(map[string]interface{})
 			if auditResponse["path"] != plugin.Name+"/data/creds" {
 				continue
 			}

@@ -66,7 +66,6 @@ func parseKeytab(b64EncodedKt string) (*keytab.Keytab, error) {
 
 func (b *backend) pathLoginGet(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	return &logical.Response{
-		Auth: &logical.Auth{},
 		Headers: map[string][]string{
 			"www-authenticate": {"Negotiate"},
 		},
@@ -140,7 +139,7 @@ func (b *backend) pathLoginUpdate(ctx context.Context, req *logical.Request, d *
 		identity, ok = raw.(goidentity.Identity)
 		if !ok {
 			w.WriteHeader(400)
-			_, _ = w.Write([]byte(fmt.Sprintf("identity credentials are malformed: %+v", raw)))
+			_, _ = fmt.Fprintf(w, "identity credentials are malformed: %+v", raw)
 			return
 		}
 		b.Logger().Debug(fmt.Sprintf("identity: %+v", identity))
@@ -160,9 +159,9 @@ func (b *backend) pathLoginUpdate(ctx context.Context, req *logical.Request, d *
 		// config's realm and the Kerberos realm. In such a case, it prevents a user from
 		// passing Kerberos authentication, and then extracting group membership, and
 		// therefore policies, from a separate directory.
-		if ldapCfg.ConfigEntry.UPNDomain != "" && identity.Domain() != ldapCfg.ConfigEntry.UPNDomain {
+		if ldapCfg.UPNDomain != "" && identity.Domain() != ldapCfg.UPNDomain {
 			w.WriteHeader(400)
-			_, _ = w.Write([]byte(fmt.Sprintf("identity domain of %q doesn't match LDAP upndomain of %q", identity.Domain(), ldapCfg.ConfigEntry.UPNDomain)))
+			_, _ = fmt.Fprintf(w, "identity domain of %q doesn't match LDAP upndomain of %q", identity.Domain(), ldapCfg.UPNDomain)
 			return
 		}
 		authenticated = true
@@ -175,8 +174,7 @@ func (b *backend) pathLoginUpdate(ctx context.Context, req *logical.Request, d *
 	})
 
 	// Now let's use our inner handler to compose the overall function.
-	authHTTPHandler := spnego.SPNEGOKRB5Authenticate(inner, kt, service.Logger(l), service.KeytabPrincipal(kerbCfg.ServiceAccount))
-
+	authHTTPHandler := spnego.SPNEGOKRB5Authenticate(inner, kt, service.Logger(l), service.KeytabPrincipal(kerbCfg.ServiceAccount), service.DecodePAC(kerbCfg.DecodePAC))
 	// Because the outer application strips off the raw request, we need to
 	// re-compose it to use this authentication handler. Only the request
 	// remote addr and headers are used anyways. We use an arbitrary port

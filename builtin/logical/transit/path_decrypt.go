@@ -17,15 +17,15 @@ import (
 type DecryptBatchResponseItem struct {
 	// Plaintext for the ciphertext present in the corresponding batch
 	// request item
-	Plaintext string `json:"plaintext" structs:"plaintext" mapstructure:"plaintext"`
+	Plaintext string `json:"plaintext" mapstructure:"plaintext"`
 
 	// Error, if set represents a failure encountered while encrypting a
 	// corresponding batch request item
-	Error string `json:"error,omitempty" structs:"error" mapstructure:"error"`
+	Error string `json:"error,omitempty" mapstructure:"error"`
 
 	// Reference is an arbitrary caller supplied string value that will be placed on the
 	// batch response to ease correlation between inputs and outputs
-	Reference string `json:"reference" structs:"reference" mapstructure:"reference"`
+	Reference string `json:"reference" mapstructure:"reference"`
 }
 
 func (b *backend) pathDecrypt() *framework.Path {
@@ -162,9 +162,6 @@ func (b *backend) pathDecryptWrite(ctx context.Context, req *logical.Request, d 
 	}
 	if p == nil {
 		return logical.ErrorResponse("encryption key not found"), logical.ErrInvalidRequest
-	}
-	if !b.System().CachingDisabled() {
-		p.Lock(false)
 	}
 	defer p.Unlock()
 

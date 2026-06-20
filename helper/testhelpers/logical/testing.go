@@ -124,7 +124,8 @@ func Test(tt TestT, c TestCase) {
 	if c.AcceptanceTest && api.ReadBaoVariable(TestEnvVar) == "" {
 		tt.Skip(fmt.Sprintf(
 			"Acceptance tests skipped unless env %q set",
-			TestEnvVar))
+			TestEnvVar,
+		))
 		return
 	}
 
@@ -198,8 +199,9 @@ func Test(tt TestT, c TestCase) {
 		return
 	}
 
+	ctx := namespace.RootContext(context.Background())
 	// Initialize the core
-	init, err := core.Initialize(context.Background(), &vault.InitParams{
+	init, err := core.Initialize(ctx, &vault.InitParams{
 		BarrierConfig: &vault.SealConfig{
 			SecretShares:    1,
 			SecretThreshold: 1,
@@ -278,9 +280,7 @@ func Test(tt TestT, c TestCase) {
 	// Make requests
 	var revoke []*logical.Request
 	for i, s := range c.Steps {
-		if logger.IsWarn() {
-			logger.Warn("Executing test step", "step_number", i+1)
-		}
+		logger.Warn("Executing test step", "step_number", i+1)
 
 		// Create the request
 		req := &logical.Request{
@@ -321,12 +321,12 @@ func Test(tt TestT, c TestCase) {
 		}
 
 		// Make the request
-		resp, err := core.HandleRequest(namespace.RootContext(nil), req)
+		resp, err := core.HandleRequest(ctx, req)
 		if resp != nil && resp.Secret != nil {
 			// Revoke this secret later
 			revoke = append(revoke, &logical.Request{
 				Operation: logical.UpdateOperation,
-				Path:      "sys/revoke/" + resp.Secret.LeaseID,
+				Path:      "sys/leases/revoke/" + resp.Secret.LeaseID,
 			})
 		}
 
@@ -371,11 +371,9 @@ func Test(tt TestT, c TestCase) {
 	// Revoke any secrets we might have.
 	var failedRevokes []*logical.Secret
 	for _, req := range revoke {
-		if logger.IsWarn() {
-			logger.Warn("Revoking secret", "secret", fmt.Sprintf("%#v", req))
-		}
+		logger.Warn("Revoking secret", "secret", fmt.Sprintf("%#v", req))
 		req.ClientToken = client.Token()
-		resp, err := core.HandleRequest(namespace.RootContext(nil), req)
+		resp, err := core.HandleRequest(ctx, req)
 		if err == nil && resp.IsError() {
 			err = fmt.Errorf("erroneous response:\n\n%#v", resp)
 		}
@@ -396,7 +394,7 @@ func Test(tt TestT, c TestCase) {
 	req := logical.RollbackRequest(rollbackPath)
 	req.Data["immediate"] = true
 	req.ClientToken = client.Token()
-	resp, err := core.HandleRequest(namespace.RootContext(nil), req)
+	resp, err := core.HandleRequest(ctx, req)
 	if err == nil && resp.IsError() {
 		err = fmt.Errorf("erroneous response:\n\n%#v", resp)
 	}
@@ -412,7 +410,8 @@ func Test(tt TestT, c TestCase) {
 			tt.Error(fmt.Sprintf(
 				"WARNING: Revoking the following secret failed. It may\n"+
 					"still exist. Please verify:\n\n%#v",
-				s))
+				s,
+			))
 		}
 	}
 }

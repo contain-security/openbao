@@ -4,7 +4,6 @@
 package postgresql
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -22,6 +21,8 @@ import (
 )
 
 func TestPostgreSQLBackend(t *testing.T) {
+	t.Parallel()
+
 	logger := logging.NewVaultLogger(log.Debug)
 
 	// Use docker as pg backend if no url is provided via environment variables
@@ -62,6 +63,7 @@ func TestPostgreSQLBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create new backend: %v", err)
 	}
+
 	pg := b1.(*PostgreSQLBackend)
 
 	// Read postgres version to test basic connects works
@@ -107,6 +109,8 @@ func TestPostgreSQLBackend(t *testing.T) {
 }
 
 func TestPostgreSQLBackendMaxIdleConnectionsParameter(t *testing.T) {
+	t.Parallel()
+
 	_, err := NewPostgreSQLBackend(map[string]string{
 		"connection_url":       "some connection url",
 		"max_idle_connections": "bad param",
@@ -121,6 +125,8 @@ func TestPostgreSQLBackendMaxIdleConnectionsParameter(t *testing.T) {
 }
 
 func TestConnectionURL(t *testing.T) {
+	t.Parallel()
+
 	type input struct {
 		envar string
 		conf  map[string]string
@@ -187,9 +193,6 @@ func TestConnectionURL(t *testing.T) {
 const maxTries = 3
 
 func testPostgresSQLLockTTL(t *testing.T, ha physical.HABackend) {
-	t.Log("Skipping testPostgresSQLLockTTL portion of test.")
-	return
-
 	for tries := 1; tries <= maxTries; tries++ {
 		// Try this several times.  If the test environment is too slow the lock can naturally lapse
 		if attemptLockTTLTest(t, ha, tries) {
@@ -437,7 +440,7 @@ func TestPostgreSQLBackend_NoCreateTables(t *testing.T) {
 
 	// Put should fail with an error.
 	entry := &physical.Entry{Key: "foo", Value: []byte("data")}
-	err = b.Put(context.Background(), entry)
+	err = b.Put(t.Context(), entry)
 	if err == nil {
 		t.Fatal("expected put to fail due to missing tables")
 	}
@@ -551,7 +554,7 @@ func TestPostgreSQLBackend_Parallel(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			entry := &physical.Entry{Key: fmt.Sprintf("foo-%v", i), Value: []byte("data")}
-			err := b.Put(context.Background(), entry)
+			err := b.Put(t.Context(), entry)
 			if err != nil {
 				errors[i] = err
 			}
@@ -575,7 +578,7 @@ func TestPostgreSQLBackend_Parallel(t *testing.T) {
 
 			entry := &physical.Entry{Key: fmt.Sprintf("foo-%v", i), Value: []byte("data")}
 
-			tx, err := b.BeginTx(context.Background())
+			tx, err := b.BeginTx(t.Context())
 			if err != nil {
 				errors[i] = err
 				return
@@ -593,7 +596,7 @@ func TestPostgreSQLBackend_Parallel(t *testing.T) {
 				errors[i] = fmt.Errorf("value for job %v exceeded max_parallel: %v", i, value)
 			}
 
-			err = tx.Put(context.Background(), entry)
+			err = tx.Put(t.Context(), entry)
 			if err != nil {
 				errors[i] = err
 				return
@@ -613,7 +616,7 @@ func TestPostgreSQLBackend_Parallel(t *testing.T) {
 
 			count.Add(-1)
 
-			err = tx.Commit(context.Background())
+			err = tx.Commit(t.Context())
 			if err != nil {
 				errors[i] = err
 				return
@@ -629,4 +632,170 @@ func TestPostgreSQLBackend_Parallel(t *testing.T) {
 			t.Fatalf("process %v: %v", j, errors[j])
 		}
 	}
+}
+
+// TestPostgreSQLBackend_LockSemantics ensures our HA locking behaves
+// according to expectations.
+func TestPostgreSQLBackend_LockSemantics(t *testing.T) {
+	t.Parallel()
+
+	logger := logging.NewVaultLogger(log.Debug)
+
+	cleanup, connURL := postgresql.PrepareTestContainer(t, "latest")
+	defer cleanup()
+
+	b, err := NewPostgreSQLBackend(map[string]string{
+		"connection_url": connURL,
+		"ha_enabled":     "true",
+	}, logger)
+	require.NoError(t, err, "failed to create a new backend")
+
+	bLocking := b.(physical.HABackend)
+	bFencing := b.(physical.FencingHABackend)
+
+	require.True(t, bLocking.HAEnabled())
+
+	lockName := "my/lock"
+	lock, err := bLocking.LockWith(lockName, "identifying-value")
+	require.NoError(t, err)
+	require.NotNil(t, lock)
+
+	leaderLossCh, err := lock.Lock(nil)
+	require.NoError(t, err)
+	require.NotNil(t, leaderLossCh)
+
+	err = bFencing.RegisterActiveNodeLock(lock)
+	require.NoError(t, err)
+
+	// Ensure fence allows us to write.
+	err = b.Put(t.Context(), &physical.Entry{
+		Key:   "a",
+		Value: []byte("asdf"),
+	})
+	require.NoError(t, err)
+
+	// Create a second backend and attempt to grab the lock.
+	b2, err := NewPostgreSQLBackend(map[string]string{
+		"connection_url": connURL,
+		"ha_enabled":     "true",
+	}, logger)
+	require.NoError(t, err, "failed to create a new backend")
+
+	b2Locking := b2.(physical.HABackend)
+
+	stopCh := make(chan struct{}, 1)
+
+	lock2, err := b2Locking.LockWith(lockName, "secondary-identifying-value")
+	require.NoError(t, err)
+	require.NotNil(t, lock2)
+
+	go func() {
+		time.Sleep(5 * time.Second)
+		close(stopCh)
+	}()
+
+	leaderLossCh2, err := lock2.Lock(stopCh)
+	require.NoError(t, err)
+	require.Nil(t, leaderLossCh2)
+
+	held, value, err := lock2.Value()
+	require.True(t, held)
+	require.Equal(t, lock.(*PostgreSQLLock).value, value)
+	require.Nil(t, err)
+
+	// Forcibly steal the lock: delete the currently held value.
+	result, err := b2.(*PostgreSQLBackend).client.Exec("TRUNCATE openbao_ha_locks;")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Write should subsequently fail.
+	err = b.Put(t.Context(), &physical.Entry{
+		Key:   "b",
+		Value: []byte("asdf"),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), physical.ErrFencedWriteFailed)
+
+	// Acquiring the lock from the secondary should have the same behavior.
+	leaderLossCh2, err = lock2.Lock(nil)
+	require.NoError(t, err)
+	require.NotNil(t, leaderLossCh2)
+
+	err = b.Put(t.Context(), &physical.Entry{
+		Key:   "c",
+		Value: []byte("asdf"),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), physical.ErrFencedWriteFailed)
+
+	// But bypassing it manually should be fine.
+	ctx := physical.UnfencedWriteCtx(t.Context())
+	err = b.Put(ctx, &physical.Entry{
+		Key:   "d",
+		Value: []byte("asdf"),
+	})
+	require.NoError(t, err)
+
+	// Same with writing from the secondary even though it doesn't
+	// have a fence.
+	err = b2.Put(t.Context(), &physical.Entry{
+		Key:   "e",
+		Value: []byte("asdf"),
+	})
+	require.NoError(t, err)
+
+	err = lock2.Unlock()
+	require.NoError(t, err)
+
+	// Reacquire the first lock.
+	leaderLossCh, err = lock.Lock(nil)
+	require.NoError(t, err)
+	require.NotNil(t, leaderLossCh)
+
+	// Writes should succeed again on first database.
+	err = b.Put(t.Context(), &physical.Entry{
+		Key:   "f",
+		Value: []byte("asdf"),
+	})
+	require.NoError(t, err)
+
+	// Wait for several renewals.
+	time.Sleep(PostgreSQLLockTTLSeconds*time.Second + PostgreSQLLockRenewInterval)
+
+	// Ensure the lock is still held.
+	select {
+	case <-leaderLossCh:
+		t.Fatal("leader loss channel was closed, implying leadership renewal failed")
+	default:
+	}
+}
+
+func TestPostgreSQLBackend_ParallelTables(t *testing.T) {
+	t.Parallel()
+
+	logger := logging.NewVaultLogger(log.Debug)
+
+	cleanup, connURL := postgresql.PrepareTestContainer(t, "11.1")
+	defer cleanup()
+
+	// Create two in the same database instance.
+	b1, err := NewPostgreSQLBackend(map[string]string{
+		"connection_url": connURL,
+		"table":          "store_1",
+		"ha_table":       "store_1_ha",
+		"ha_enabled":     "true",
+	}, logger)
+	require.NoError(t, err)
+
+	b2, err := NewPostgreSQLBackend(map[string]string{
+		"connection_url": connURL,
+		"table":          "store_2",
+		"ha_table":       "store_2_ha",
+		"ha_enabled":     "true",
+	}, logger)
+	require.NoError(t, err)
+
+	logger.Info("Running basic backend tests")
+	physical.ExerciseBackend(t, b1)
+	physical.ExerciseBackend(t, b2)
 }

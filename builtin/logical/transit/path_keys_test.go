@@ -4,7 +4,6 @@
 package transit
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +15,7 @@ import (
 	"github.com/openbao/openbao/api/v2"
 	"github.com/openbao/openbao/audit"
 	"github.com/openbao/openbao/builtin/audit/file"
+	"github.com/openbao/openbao/command/server"
 	vaulthttp "github.com/openbao/openbao/http"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/openbao/openbao/vault"
@@ -24,6 +24,9 @@ import (
 
 func TestTransit_Issue_2958(t *testing.T) {
 	coreConfig := &vault.CoreConfig{
+		RawConfig: &server.Config{
+			UnsafeAllowAPIAuditCreation: true,
+		},
 		LogicalBackends: map[string]logical.Factory{
 			"transit": Factory,
 		},
@@ -228,7 +231,7 @@ func testOpsFailAfterDeletion(t *testing.T, keyType string, encrypt bool, sign b
 		req.Data["key_size"] = 32
 	}
 
-	resp, err := b.HandleRequest(context.Background(), req)
+	resp, err := b.HandleRequest(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -238,7 +241,7 @@ func testOpsFailAfterDeletion(t *testing.T, keyType string, encrypt bool, sign b
 		"type": "rsa-4096",
 	}
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -250,7 +253,7 @@ func testOpsFailAfterDeletion(t *testing.T, keyType string, encrypt bool, sign b
 	req.Operation = logical.DeleteOperation
 	req.Data = nil
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -261,7 +264,7 @@ func testOpsFailAfterDeletion(t *testing.T, keyType string, encrypt bool, sign b
 	req.Path = "keys/test/soft-delete-restore"
 	req.Operation = logical.UpdateOperation
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -276,7 +279,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 		Operation: logical.ReadOperation,
 		Storage:   s,
 	}
-	resp, err := b.HandleRequest(context.Background(), req)
+	resp, err := b.HandleRequest(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -289,7 +292,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 			"plaintext": base64.StdEncoding.EncodeToString([]byte("hello world")),
 		}
 
-		resp, err = b.HandleRequest(context.Background(), req)
+		resp, err = b.HandleRequest(t.Context(), req)
 		if expectedFailure {
 			require.Error(t, err)
 			resp = &logical.Response{
@@ -307,7 +310,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 			"ciphertext": resp.Data["ciphertext"],
 		}
 
-		resp, err = b.HandleRequest(context.Background(), req)
+		resp, err = b.HandleRequest(t.Context(), req)
 		if expectedFailure {
 			require.Error(t, err)
 		} else {
@@ -325,7 +328,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 			"input": base64.StdEncoding.EncodeToString([]byte("hello world")),
 		}
 
-		resp, err = b.HandleRequest(context.Background(), req)
+		resp, err = b.HandleRequest(t.Context(), req)
 		if expectedFailure {
 			require.Error(t, err)
 			resp = &logical.Response{
@@ -344,7 +347,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 			"signature": resp.Data["signature"],
 		}
 
-		resp, err = b.HandleRequest(context.Background(), req)
+		resp, err = b.HandleRequest(t.Context(), req)
 		if expectedFailure {
 			require.Error(t, err)
 		} else {
@@ -361,7 +364,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 		"input": base64.StdEncoding.EncodeToString([]byte("hello world")),
 	}
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	if expectedFailure {
 		require.Error(t, err)
 		resp = &logical.Response{
@@ -380,7 +383,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 		"hmac":  resp.Data["hmac"],
 	}
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	if expectedFailure {
 		require.Error(t, err)
 	} else {
@@ -394,7 +397,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 	req.Path = "keys/test/rotate"
 	req.Data = nil
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	if expectedFailure {
 		require.Error(t, err)
 	} else {
@@ -412,7 +415,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 		req.Path = "export/hmac-key/test"
 	}
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	if expectedFailure {
 		require.Error(t, err)
 	} else {
@@ -423,7 +426,7 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 	// Validate that BYOK exporting conditionally fails.
 	req.Path = "byok-export/byok-key/test"
 
-	resp, err = b.HandleRequest(context.Background(), req)
+	resp, err = b.HandleRequest(t.Context(), req)
 	if expectedFailure {
 		require.Error(t, err)
 	} else {
@@ -432,4 +435,52 @@ func validateOpsFail(t *testing.T, b *backend, s logical.Storage, encrypt bool, 
 	}
 
 	// Soft deleted keys remain updatable.
+}
+
+func TestCreateDerivedKey(t *testing.T) {
+	b, s := createBackendWithStorage(t)
+
+	for _, algo := range []string{
+		"aes128-gcm96", "aes256-gcm96", "chacha20-poly1305",
+		"xchacha20-poly1305", "ed25519",
+	} {
+		req := &logical.Request{
+			Path:      "keys/" + algo,
+			Operation: logical.UpdateOperation,
+			Storage:   s,
+			Data: map[string]interface{}{
+				"type":    algo,
+				"derived": true,
+			},
+		}
+		if algo == "hmac" {
+			req.Data["key_size"] = 32
+		}
+
+		resp, err := b.HandleRequest(t.Context(), req)
+		require.NoError(t, err, algo)
+		require.NotNil(t, resp, algo)
+	}
+
+	for _, algo := range []string{
+		"hmac", "rsa-2048", "rsa-3072", "rsa-4096", "ecdsa-p256",
+		"ecdsa-p384", "ecdsa-p521",
+	} {
+		req := &logical.Request{
+			Path:      "keys/" + algo,
+			Operation: logical.UpdateOperation,
+			Storage:   s,
+			Data: map[string]interface{}{
+				"type":    algo,
+				"derived": true,
+			},
+		}
+		if algo == "hmac" {
+			req.Data["key_size"] = 32
+		}
+
+		resp, err := b.HandleRequest(t.Context(), req)
+		require.Error(t, err, algo)
+		require.Nil(t, resp, algo)
+	}
 }

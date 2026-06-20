@@ -7,12 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,7 +40,7 @@ func newClient(config *kubeConfig) (*client, error) {
 		BearerToken: config.ServiceAccountJwt,
 	}
 	if config.CACert != "" {
-		clientConfig.TLSClientConfig.CAData = []byte(config.CACert)
+		clientConfig.CAData = []byte(config.CACert)
 	}
 	k8sClient, err := kubernetes.NewForConfig(&clientConfig)
 	if err != nil {
@@ -65,7 +65,7 @@ func (c *client) createToken(ctx context.Context, namespace, name string, ttl ti
 	return &resp.Status, nil
 }
 
-func (c *client) createServiceAccount(ctx context.Context, namespace, name string, vaultRole *roleEntry, ownerRef metav1.OwnerReference) (*v1.ServiceAccount, error) {
+func (c *client) createServiceAccount(ctx context.Context, namespace, name string, vaultRole *roleEntry, ownerRef metav1.OwnerReference) (*corev1.ServiceAccount, error) {
 	// Set standardLabels last so that users can't override them
 	labels := combineMaps(vaultRole.ExtraLabels, standardLabels)
 	serviceAccountConfig := &corev1.ServiceAccount{
@@ -261,12 +261,10 @@ func makeRoleType(roleType string) string {
 	}
 }
 
-func combineMaps(maps ...map[string]string) map[string]string {
+func combineMaps(combine ...map[string]string) map[string]string {
 	newMap := make(map[string]string)
-	for _, m := range maps {
-		for k, v := range m {
-			newMap[k] = v
-		}
+	for _, m := range combine {
+		maps.Copy(newMap, m)
 	}
 	return newMap
 }

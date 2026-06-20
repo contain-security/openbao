@@ -46,7 +46,7 @@ func genSalt(size int) ([]byte, error) {
 func encodeB64(src []byte) (dst []byte) {
 	dst = make([]byte, base64.StdEncoding.EncodedLen(len(src)))
 	base64.StdEncoding.Encode(dst, src)
-	return
+	return dst
 }
 
 func getHMACSum(key, msg []byte) []byte {
@@ -67,7 +67,8 @@ func hashPassword(rawPassword, salt []byte, iter, keyLen int) string {
 	storedKey := getSHA256Sum(clientKey)
 	serverKey := getHMACSum(digestKey, serverRawKey)
 
-	return fmt.Sprintf("SCRAM-SHA-256$%d:%s$%s:%s",
+	return fmt.Sprintf(
+		"SCRAM-SHA-256$%d:%s$%s:%s",
 		iter,
 		string(encodeB64(salt)),
 		string(encodeB64(storedKey)),

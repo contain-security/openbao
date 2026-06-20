@@ -100,7 +100,7 @@ func GetHexFormatted(buf []byte, sep string) string {
 	var ret bytes.Buffer
 	for _, cur := range buf {
 		if ret.Len() > 0 {
-			fmt.Fprintf(&ret, sep)
+			fmt.Fprintf(&ret, "%s", sep)
 		}
 		fmt.Fprintf(&ret, "%02x", cur)
 	}
@@ -112,8 +112,8 @@ func ParseHexFormatted(in, sep string) []byte {
 	var ret bytes.Buffer
 	var err error
 	var inBits uint64
-	inBytes := strings.Split(in, sep)
-	for _, inByte := range inBytes {
+	inBytes := strings.SplitSeq(in, sep)
+	for inByte := range inBytes {
 		if inBits, err = strconv.ParseUint(inByte, 16, 8); err != nil {
 			return nil
 		}
@@ -160,7 +160,11 @@ func GetSubjectKeyID(pub interface{}) ([]byte, error) {
 			return nil, errutil.InternalError{Err: fmt.Sprintf("error marshalling public key: %s", err)}
 		}
 	case *ecdsa.PublicKey:
-		publicKeyBytes = elliptic.Marshal(pub.Curve, pub.X, pub.Y)
+		var err error
+		publicKeyBytes, err = pub.Bytes()
+		if err != nil {
+			return nil, errutil.InternalError{Err: fmt.Sprintf("error marshalling public key: %s", err)}
+		}
 	case ed25519.PublicKey:
 		publicKeyBytes = pub
 	default:
@@ -209,13 +213,13 @@ func ParseDERKey(privateKeyBytes []byte) (signer crypto.Signer, format BlockType
 	var firstError error
 	if signer, firstError = x509.ParseECPrivateKey(privateKeyBytes); firstError == nil {
 		format = ECBlock
-		return
+		return signer, format, err
 	}
 
 	var secondError error
 	if signer, secondError = x509.ParsePKCS1PrivateKey(privateKeyBytes); secondError == nil {
 		format = PKCS1Block
-		return
+		return signer, format, err
 	}
 
 	var thirdError error
@@ -233,7 +237,7 @@ func ParseDERKey(privateKeyBytes []byte) (signer crypto.Signer, format BlockType
 		}
 
 		format = PKCS8Block
-		return
+		return signer, format, err
 	}
 
 	return nil, UnknownBlock, fmt.Errorf("got errors attempting to parse DER private key:\n1. %v\n2. %v\n3. %v", firstError, secondError, thirdError)
@@ -326,7 +330,7 @@ func generatePrivateKey(keyType string, keyBits int, container ParsedPrivateKeyC
 	var privateKeyBytes []byte
 	var privateKey crypto.Signer
 
-	var randReader io.Reader = rand.Reader
+	randReader := rand.Reader
 	if entropyReader != nil {
 		randReader = entropyReader
 	}
@@ -476,13 +480,13 @@ func ComparePublicKeys(key1Iface, key2Iface crypto.PublicKey) (bool, error) {
 }
 
 // ParsePublicKeyPEM is used to parse RSA and ECDSA public keys from PEMs
-func ParsePublicKeyPEM(data []byte) (interface{}, error) {
+func ParsePublicKeyPEM(data []byte) (crypto.PublicKey, error) {
 	block, data := pem.Decode(data)
 	if block != nil {
 		if len(bytes.TrimSpace(data)) > 0 {
 			return nil, errutil.UserError{Err: "unexpected trailing data after parsed PEM block"}
 		}
-		var rawKey interface{}
+		var rawKey any
 		var err error
 		if rawKey, err = x509.ParsePKIXPublicKey(block.Bytes); err != nil {
 			if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
@@ -547,11 +551,7 @@ func HandleOtherCSRSANs(in *x509.CertificateRequest, sans map[string][]string) e
 	if err := HandleOtherSANs(certTemplate, sans); err != nil {
 		return err
 	}
-	if len(certTemplate.ExtraExtensions) > 0 {
-		for _, v := range certTemplate.ExtraExtensions {
-			in.ExtraExtensions = append(in.ExtraExtensions, v)
-		}
-	}
+	in.ExtraExtensions = append(in.ExtraExtensions, certTemplate.ExtraExtensions...)
 	return nil
 }
 
@@ -1390,7 +1390,7 @@ func signCertificate(data *CreationBundle, randReader io.Reader) (*ParsedCertBun
 	}
 
 	if data.Params.UseCSRValues {
-		certTemplate.Subject = data.CSR.Subject
+		certTemplate.RawSubject = data.CSR.RawSubject
 		certTemplate.Subject.ExtraNames = certTemplate.Subject.Names
 
 		certTemplate.DNSNames = data.CSR.DNSNames
@@ -1399,7 +1399,7 @@ func signCertificate(data *CreationBundle, randReader io.Reader) (*ParsedCertBun
 		certTemplate.URIs = data.CSR.URIs
 
 		for _, name := range data.CSR.Extensions {
-			if !name.Id.Equal(ExtensionBasicConstraintsOID) && !(len(data.Params.OtherSANs) > 0 && name.Id.Equal(ExtensionSubjectAltNameOID)) {
+			if !name.Id.Equal(ExtensionBasicConstraintsOID) && (len(data.Params.OtherSANs) == 0 || !name.Id.Equal(ExtensionSubjectAltNameOID)) {
 				certTemplate.ExtraExtensions = append(certTemplate.ExtraExtensions, name)
 			}
 		}

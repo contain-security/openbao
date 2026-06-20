@@ -52,6 +52,10 @@ func NewFileBackend(conf map[string]string, logger log.Logger) (physical.Backend
 		return nil, errors.New("'path' must be set")
 	}
 
+	if logger != nil {
+		logger.Warn("the file physical backend is deprecated; use bao operator migrate to move to a supported storage backend by v2.7.0")
+	}
+
 	return &FileBackend{
 		path:       path,
 		logger:     logger,
@@ -226,7 +230,8 @@ func (b *FileBackend) PutInternal(ctx context.Context, entry *physical.Entry) er
 	f, err := os.OpenFile(
 		tempPath,
 		os.O_CREATE|os.O_TRUNC|os.O_WRONLY,
-		0o600)
+		0o600,
+	)
 	if err != nil {
 		if f != nil {
 			f.Close()

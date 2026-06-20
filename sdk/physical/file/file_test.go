@@ -4,7 +4,6 @@
 package file
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -17,11 +16,7 @@ import (
 )
 
 func TestFileBackend_Base64URLEncoding(t *testing.T) {
-	backendPath, err := os.MkdirTemp("", "vault")
-	if err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	defer os.RemoveAll(backendPath)
+	backendPath := t.TempDir()
 
 	logger := logging.NewVaultLogger(log.Debug)
 
@@ -33,14 +28,14 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 	}
 
 	// List the entries. Length should be zero.
-	keys, err := b.List(context.Background(), "")
+	keys, err := b.List(t.Context(), "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(keys) != 0 {
 		t.Fatalf("bad: len(keys): expected: 0, actual: %d", len(keys))
 	}
-	keys, err = b.ListPage(context.Background(), "", "", -1)
+	keys, err = b.ListPage(t.Context(), "", "", -1)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -53,7 +48,8 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 	f, err := os.OpenFile(
 		rawFullPath,
 		os.O_CREATE|os.O_TRUNC|os.O_WRONLY,
-		0o600)
+		0o600,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +57,7 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 	f.Close()
 
 	// Get should work
-	out, err := b.Get(context.Background(), "foo")
+	out, err := b.Get(t.Context(), "foo")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -70,14 +66,14 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 	}
 
 	// List the entries. There should be one entry.
-	keys, err = b.List(context.Background(), "")
+	keys, err = b.List(t.Context(), "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(keys) != 1 {
 		t.Fatalf("bad: len(keys): expected: 1, actual: %d", len(keys))
 	}
-	keys, err = b.ListPage(context.Background(), "", "", -1)
+	keys, err = b.ListPage(t.Context(), "", "", -1)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -86,7 +82,7 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 	}
 
 	// Listing after the last entry should return none.
-	keys, err = b.ListPage(context.Background(), "", "foo", -1)
+	keys, err = b.ListPage(t.Context(), "", "foo", -1)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -94,20 +90,20 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 		t.Fatalf("bad: len(keys): expected: 0, actual: %d", len(keys))
 	}
 
-	err = b.Put(context.Background(), e)
+	err = b.Put(t.Context(), e)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	// List the entries again. There should still be one entry.
-	keys, err = b.List(context.Background(), "")
+	keys, err = b.List(t.Context(), "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(keys) != 1 {
 		t.Fatalf("bad: len(keys): expected: 1, actual: %d", len(keys))
 	}
-	keys, err = b.ListPage(context.Background(), "", "", -1)
+	keys, err = b.ListPage(t.Context(), "", "", -1)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -116,7 +112,7 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 	}
 
 	// Get should work
-	out, err = b.Get(context.Background(), "foo")
+	out, err = b.Get(t.Context(), "foo")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -124,12 +120,12 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 		t.Fatalf("bad: %v expected: %v", out, e)
 	}
 
-	err = b.Delete(context.Background(), "foo")
+	err = b.Delete(t.Context(), "foo")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
-	out, err = b.Get(context.Background(), "foo")
+	out, err = b.Get(t.Context(), "foo")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -137,14 +133,14 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 		t.Fatalf("bad: entry: expected: nil, actual: %#v", e)
 	}
 
-	keys, err = b.List(context.Background(), "")
+	keys, err = b.List(t.Context(), "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(keys) != 0 {
 		t.Fatalf("bad: len(keys): expected: 0, actual: %d", len(keys))
 	}
-	keys, err = b.ListPage(context.Background(), "", "", -1)
+	keys, err = b.ListPage(t.Context(), "", "", -1)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -155,21 +151,22 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 	f, err = os.OpenFile(
 		rawFullPath,
 		os.O_CREATE|os.O_TRUNC|os.O_WRONLY,
-		0o600)
+		0o600,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	json.NewEncoder(f).Encode(e)
 	f.Close()
 
-	keys, err = b.List(context.Background(), "")
+	keys, err = b.List(t.Context(), "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(keys) != 1 {
 		t.Fatalf("bad: len(keys): expected: 1, actual: %d", len(keys))
 	}
-	keys, err = b.ListPage(context.Background(), "", "", -1)
+	keys, err = b.ListPage(t.Context(), "", "", -1)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -179,11 +176,7 @@ func TestFileBackend_Base64URLEncoding(t *testing.T) {
 }
 
 func TestFileBackend_ValidatePath(t *testing.T) {
-	dir, err := os.MkdirTemp("", "vault")
-	if err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	logger := logging.NewVaultLogger(log.Debug)
 
@@ -194,20 +187,16 @@ func TestFileBackend_ValidatePath(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 
-	if err := b.Delete(context.Background(), "foo/bar/../zip"); err == nil {
+	if err := b.Delete(t.Context(), "foo/bar/../zip"); err == nil {
 		t.Fatal("expected error")
 	}
-	if err := b.Delete(context.Background(), "foo/bar/zip"); err != nil {
+	if err := b.Delete(t.Context(), "foo/bar/zip"); err != nil {
 		t.Fatal("did not expect error")
 	}
 }
 
 func TestFileBackend(t *testing.T) {
-	dir, err := os.MkdirTemp("", "vault")
-	if err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	logger := logging.NewVaultLogger(log.Debug)
 
@@ -223,23 +212,23 @@ func TestFileBackend(t *testing.T) {
 
 	// Underscores should not trip things up; ref GH-3476
 	e := &physical.Entry{Key: "_zip", Value: []byte("foobar")}
-	err = b.Put(context.Background(), e)
+	err = b.Put(t.Context(), e)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	e = &physical.Entry{Key: "_zip/_zap", Value: []byte("boofar")}
-	err = b.Put(context.Background(), e)
+	err = b.Put(t.Context(), e)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	e, err = b.Get(context.Background(), "_zip/_zap")
+	e, err = b.Get(t.Context(), "_zip/_zap")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if e == nil {
 		t.Fatal("got nil entry")
 	}
-	vals, err := b.List(context.Background(), "")
+	vals, err := b.List(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,29 +240,29 @@ func TestFileBackend(t *testing.T) {
 			t.Fatalf("bad val: %v", val)
 		}
 	}
-	vals, err = b.List(context.Background(), "_zip/")
+	vals, err = b.List(t.Context(), "_zip/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(vals) != 1 || vals[0] != "_zap" {
 		t.Fatalf("bad: %v", vals)
 	}
-	err = b.Delete(context.Background(), "_zip/_zap")
+	err = b.Delete(t.Context(), "_zip/_zap")
 	if err != nil {
 		t.Fatal(err)
 	}
-	vals, err = b.List(context.Background(), "")
+	vals, err = b.List(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(vals) != 1 || vals[0] != "_zip" {
 		t.Fatalf("bad: %v", vals)
 	}
-	err = b.Delete(context.Background(), "_zip")
+	err = b.Delete(t.Context(), "_zip")
 	if err != nil {
 		t.Fatal(err)
 	}
-	vals, err = b.List(context.Background(), "")
+	vals, err = b.List(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,6 @@
 package openldap
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -12,8 +11,8 @@ import (
 )
 
 func TestCheckOutHandlerStorageLayer(t *testing.T) {
-	ctx := context.Background()
-	b, s := getBackend(false)
+	ctx := t.Context()
+	b, s := getBackend(t, false)
 	defer b.Cleanup(ctx)
 
 	checkOut := &CheckOut{
@@ -89,8 +88,8 @@ func TestCheckOutHandlerStorageLayer(t *testing.T) {
 }
 
 func TestPasswordHandlerInterfaceFulfillment(t *testing.T) {
-	ctx := context.Background()
-	b, s := getBackend(false)
+	ctx := t.Context()
+	b, s := getBackend(t, false)
 	defer b.Cleanup(ctx)
 
 	checkOut := &CheckOut{
@@ -141,7 +140,7 @@ func TestPasswordHandlerInterfaceFulfillment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	currPassword, err = retrievePassword(ctx, s, serviceAccountName)
+	_, err = retrievePassword(ctx, s, serviceAccountName)
 	if err != errNotFound {
 		t.Fatal("expected errNotFound")
 	}

@@ -7,20 +7,22 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/armon/go-metrics"
-	"github.com/go-jose/go-jose/v3"
-	"github.com/go-jose/go-jose/v3/jwt"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
+	metrics "github.com/hashicorp/go-metrics/compat"
 	"github.com/openbao/openbao/helper/metricsutil"
 	"github.com/openbao/openbao/helper/namespace"
 	"github.com/openbao/openbao/sdk/v2/helper/certutil"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/helper/jsonutil"
 	"github.com/openbao/openbao/sdk/v2/logical"
+	"github.com/openbao/openbao/vault/policy"
 )
 
 const (
@@ -37,7 +39,7 @@ func (c *Core) ensureWrappingKey(ctx context.Context) error {
 	var keyParams certutil.ClusterKeyParams
 
 	if entry == nil {
-		key, err := ecdsa.GenerateKey(elliptic.P521(), c.secureRandomReader)
+		key, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 		if err != nil {
 			return fmt.Errorf("failed to generate wrapping key: %w", err)
 		}
@@ -215,13 +217,14 @@ DONELISTHANDLING:
 		}
 		sig, err := jose.NewSigner(
 			jose.SigningKey{Algorithm: jose.ES512, Key: c.wrappingJWTKey},
-			(&jose.SignerOptions{}).WithType("JWT"))
+			(&jose.SignerOptions{}).WithType("JWT"),
+		)
 		if err != nil {
 			c.tokenStore.revokeOrphan(ctx, te.ID)
 			c.logger.Error("failed to create JWT builder", "error", err)
 			return nil, ErrInternalError
 		}
-		ser, err := jwt.Signed(sig).Claims(claims).Claims(priClaims).CompactSerialize()
+		ser, err := jwt.Signed(sig).Claims(claims).Claims(priClaims).Serialize()
 		if err != nil {
 			c.tokenStore.revokeOrphan(ctx, te.ID)
 			c.logger.Error("failed to serialize JWT", "error", err)
@@ -347,10 +350,6 @@ func (c *Core) validateWrappingToken(ctx context.Context, req *logical.Request) 
 		return false, consts.ErrSealed
 	}
 
-	if c.standby {
-		return false, consts.ErrStandby
-	}
-
 	defer func() {
 		// Perform audit logging before returning if there's an issue with checking
 		// the wrapping token
@@ -404,7 +403,7 @@ func (c *Core) validateWrappingToken(ctx context.Context, req *logical.Request) 
 	// and then a dot.
 	if IsJWT(token) {
 		// Implement the jose library way
-		parsedJWT, err := jwt.ParseSigned(token)
+		parsedJWT, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES512})
 		if err != nil {
 			return false, fmt.Errorf("wrapping token could not be parsed: %w", err)
 		}
@@ -463,7 +462,7 @@ func IsWrappingToken(te *logical.TokenEntry) bool {
 		return false
 	}
 
-	if te.Policies[0] != responseWrappingPolicyName {
+	if te.Policies[0] != policy.ResponseWrappingPolicyName {
 		return false
 	}
 

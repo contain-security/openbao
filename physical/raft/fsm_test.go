@@ -4,25 +4,23 @@
 package raft
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
-	"os"
 	"sort"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-test/deep"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	"github.com/openbao/openbao/sdk/v2/physical"
+	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/proto"
 )
 
-func getFSM(t testing.TB) (*FSM, string) {
-	raftDir, err := os.MkdirTemp("", "vault-raft-")
-	if err != nil {
-		t.Fatal(err)
-	}
+func getFSM(t testing.TB) *FSM {
+	raftDir := t.TempDir()
 	t.Logf("raft dir: %s", raftDir)
 
 	logger := hclog.New(&hclog.LoggerOptions{
@@ -35,15 +33,20 @@ func getFSM(t testing.TB) (*FSM, string) {
 		t.Fatal(err)
 	}
 
-	return fsm, raftDir
+	return fsm
 }
 
 func TestFSM_Batching(t *testing.T) {
-	fsm, dir := getFSM(t)
-	defer func() { _ = os.RemoveAll(dir) }()
+	t.Parallel()
+	fsm := getFSM(t)
 
 	var index uint64
 	var term uint64 = 1
+
+	var hookCallCount atomic.Uint64
+	fsm.hookInvalidate(func(key ...string) {
+		hookCallCount.Add(uint64(len(key)))
+	})
 
 	getLog := func(i uint64) (int, *raft.Log) {
 		if rand.Intn(10) >= 8 {
@@ -71,7 +74,7 @@ func TestFSM_Batching(t *testing.T) {
 			command.Operations[j] = &LogOperation{
 				OpType: putOp,
 				Key:    fmt.Sprintf("key-%d-%d", i, j),
-				Value:  []byte(fmt.Sprintf("value-%d-%d", i, j)),
+				Value:  fmt.Appendf(nil, "value-%d-%d", i, j),
 			}
 		}
 		commandBytes, err := proto.Marshal(command)
@@ -87,10 +90,10 @@ func TestFSM_Batching(t *testing.T) {
 	}
 
 	totalKeys := 0
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		batchSize := rand.Intn(64)
 		batch := make([]*raft.Log, batchSize)
-		for j := 0; j < batchSize; j++ {
+		for j := range batchSize {
 			var keys int
 			index++
 			keys, batch[j] = getLog(index)
@@ -109,7 +112,11 @@ func TestFSM_Batching(t *testing.T) {
 		}
 	}
 
-	keys, err := fsm.List(context.Background(), "")
+	assert.EventuallyWithT(t, func(collect *assert.CollectT) {
+		assert.EqualValues(collect, totalKeys, hookCallCount.Load())
+	}, time.Second, time.Millisecond)
+
+	keys, err := fsm.List(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,10 +139,10 @@ func TestFSM_Batching(t *testing.T) {
 }
 
 func TestFSM_List(t *testing.T) {
-	fsm, dir := getFSM(t)
-	defer func() { _ = os.RemoveAll(dir) }()
+	t.Parallel()
+	fsm := getFSM(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	count := 100
 	keys := rand.Perm(count)
 	var sorted []string

@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -309,25 +310,11 @@ func validateCommonName(b *backend, data *inputBundle, name string) string {
 	// If there's an at in the data, ensure email type validation is allowed.
 	// Otherwise, ensure hostname is allowed.
 	if strings.Contains(name, "@") {
-		var allowsEmails bool
-		for _, validation := range data.role.CNValidations {
-			if validation == "email" {
-				allowsEmails = true
-				break
-			}
-		}
-		if !allowsEmails {
+		if !slices.Contains(data.role.CNValidations, "email") {
 			return name
 		}
 	} else {
-		var allowsHostnames bool
-		for _, validation := range data.role.CNValidations {
-			if validation == "hostname" {
-				allowsHostnames = true
-				break
-			}
-		}
-		if !allowsHostnames {
+		if !slices.Contains(data.role.CNValidations, "hostname") {
 			return name
 		}
 	}
@@ -913,7 +900,8 @@ func signCert(b *backend,
 		if csr.PublicKeyAlgorithm != x509.RSA {
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
 				"role requires keys of type %s",
-				data.role.KeyType)}
+				data.role.KeyType,
+			)}
 		}
 
 		pubKey, ok := csr.PublicKey.(*rsa.PublicKey)
@@ -928,7 +916,8 @@ func signCert(b *backend,
 		if csr.PublicKeyAlgorithm != x509.ECDSA {
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
 				"role requires keys of type %s",
-				data.role.KeyType)}
+				data.role.KeyType,
+			)}
 		}
 		pubKey, ok := csr.PublicKey.(*ecdsa.PublicKey)
 		if !ok {
@@ -942,7 +931,8 @@ func signCert(b *backend,
 		if csr.PublicKeyAlgorithm != x509.Ed25519 {
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
 				"role requires keys of type %s",
-				data.role.KeyType)}
+				data.role.KeyType,
+			)}
 		}
 
 		_, ok := csr.PublicKey.(ed25519.PublicKey)
@@ -1005,7 +995,8 @@ func signCert(b *backend,
 		// docs saying when key_type=any, we only enforce our specified minimums
 		// for signing operations
 		if data.role.KeyBits, data.role.SignatureBits, err = certutil.ValidateDefaultOrValueKeyTypeSignatureLength(
-			actualKeyType, 0, data.role.SignatureBits); err != nil {
+			actualKeyType, 0, data.role.SignatureBits,
+		); err != nil {
 			return nil, nil, errutil.InternalError{Err: fmt.Sprintf("unknown internal error updating default values: %v", err)}
 		}
 
@@ -1026,24 +1017,28 @@ func signCert(b *backend,
 	//
 	// This validation needs to occur regardless of the role's key type, so
 	// that we always validate both RSA and ECDSA key sizes.
-	if actualKeyType == "rsa" {
+	switch actualKeyType {
+	case "rsa":
 		if actualKeyBits < data.role.KeyBits {
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
 				"role requires a minimum of a %d-bit key, but CSR's key is %d bits",
-				data.role.KeyBits, actualKeyBits)}
+				data.role.KeyBits, actualKeyBits,
+			)}
 		}
 
 		if actualKeyBits < 2048 {
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
 				"OpenBao requires a minimum of a 2048-bit key, but CSR's key is %d bits",
-				actualKeyBits)}
+				actualKeyBits,
+			)}
 		}
-	} else if actualKeyType == "ec" {
+	case "ec":
 		if actualKeyBits < data.role.KeyBits {
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
 				"role requires a minimum of a %d-bit key, but CSR's key is %d bits",
 				data.role.KeyBits,
-				actualKeyBits)}
+				actualKeyBits,
+			)}
 		}
 	}
 
@@ -1301,7 +1296,8 @@ func generateCreationBundle(b *backend, data *inputBundle, caSign *certutil.CAIn
 			badName := validateCommonName(b, data, cn)
 			if len(badName) != 0 {
 				return nil, nil, errutil.UserError{Err: fmt.Sprintf(
-					"common name %s not allowed by this role", badName)}
+					"common name %s not allowed by this role", badName,
+				)}
 			}
 		}
 
@@ -1309,7 +1305,8 @@ func generateCreationBundle(b *backend, data *inputBundle, caSign *certutil.CAIn
 			badName := validateSerialNumber(data, ridSerialNumber)
 			if len(badName) != 0 {
 				return nil, nil, errutil.UserError{Err: fmt.Sprintf(
-					"serial_number %s not allowed by this role", badName)}
+					"serial_number %s not allowed by this role", badName,
+				)}
 			}
 		}
 
@@ -1317,13 +1314,15 @@ func generateCreationBundle(b *backend, data *inputBundle, caSign *certutil.CAIn
 		badName := validateNames(b, data, dnsNames)
 		if len(badName) != 0 {
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
-				"subject alternate name %s not allowed by this role", badName)}
+				"subject alternate name %s not allowed by this role", badName,
+			)}
 		}
 
 		badName = validateNames(b, data, emailAddresses)
 		if len(badName) != 0 {
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
-				"email address %s not allowed by this role", badName)}
+				"email address %s not allowed by this role", badName,
+			)}
 		}
 	}
 
@@ -1357,10 +1356,12 @@ func generateCreationBundle(b *backend, data *inputBundle, caSign *certutil.CAIn
 			return nil, nil, errutil.UserError{Err: err.Error()}
 		case len(badName) > 0:
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
-				"other SAN %s not allowed for OID %s by this role", badName, badOID)}
+				"other SAN %s not allowed for OID %s by this role", badName, badOID,
+			)}
 		case len(badOID) > 0:
 			return nil, nil, errutil.UserError{Err: fmt.Sprintf(
-				"other SAN OID %s not allowed by this role", badOID)}
+				"other SAN OID %s not allowed by this role", badOID,
+			)}
 		default:
 			otherSANs = requested
 		}
@@ -1381,15 +1382,35 @@ func generateCreationBundle(b *backend, data *inputBundle, caSign *certutil.CAIn
 			if len(ipAlt) > 0 {
 				if !data.role.AllowIPSANs {
 					return nil, nil, errutil.UserError{Err: fmt.Sprintf(
-						"IP Subject Alternative Names are not allowed in this role, but was provided %s", ipAlt)}
+						"IP Subject Alternative Names are not allowed in this role, but was provided %s", ipAlt,
+					)}
 				}
 				for _, v := range ipAlt {
 					parsedIP := net.ParseIP(v)
 					if parsedIP == nil {
 						return nil, nil, errutil.UserError{Err: fmt.Sprintf(
-							"the value %q is not a valid IP address", v)}
+							"the value %q is not a valid IP address", v,
+						)}
 					}
-					ipAddresses = append(ipAddresses, parsedIP)
+					if len(data.role.AllowedIPSANsCIDR) > 0 {
+						valid := false
+						for _, allowedNetwork := range data.role.AllowedIPSANsCIDR {
+							if allowedNetwork.Contains(parsedIP) {
+								valid = true
+								break
+							}
+						}
+
+						if !valid {
+							return nil, nil, errutil.UserError{Err: fmt.Sprintf(
+								"the IP address %q is not allowed in this role", v,
+							)}
+						}
+
+						ipAddresses = append(ipAddresses, parsedIP)
+					} else {
+						ipAddresses = append(ipAddresses, parsedIP)
+					}
 				}
 			}
 		}
@@ -1438,7 +1459,8 @@ func generateCreationBundle(b *backend, data *inputBundle, caSign *certutil.CAIn
 					if parsedURI == nil || err != nil {
 						return nil, nil, errutil.UserError{
 							Err: fmt.Sprintf(
-								"the provided URI Subject Alternative Name %q is not a valid URI", uri),
+								"the provided URI Subject Alternative Name %q is not a valid URI", uri,
+							),
 						}
 					}
 
@@ -1769,14 +1791,16 @@ func getCertificateNotAfter(b *backend, data *inputBundle, caSign *certutil.CAIn
 			// Error out if notAfter is in the past
 			if notAfter.Before(time.Now()) {
 				return time.Time{}, warnings, errutil.UserError{Err: fmt.Sprintf(
-					"cannot satisfy request, as NotAfter date %s is in the past", notAfter)}
+					"cannot satisfy request, as NotAfter date %s is in the past", notAfter,
+				)}
 			}
 			notAfter = caSign.Certificate.NotAfter
 		case certutil.ErrNotAfterBehavior:
 			fallthrough
 		default:
 			return time.Time{}, warnings, errutil.UserError{Err: fmt.Sprintf(
-				"cannot satisfy request, as TTL would result in notAfter of %s that is beyond the expiration of the CA certificate at %s", notAfter.UTC().Format(time.RFC3339Nano), caSign.Certificate.NotAfter.UTC().Format(time.RFC3339Nano))}
+				"cannot satisfy request, as TTL would result in notAfter of %s that is beyond the expiration of the CA certificate at %s", notAfter.UTC().Format(time.RFC3339Nano), caSign.Certificate.NotAfter.UTC().Format(time.RFC3339Nano),
+			)}
 		}
 	}
 

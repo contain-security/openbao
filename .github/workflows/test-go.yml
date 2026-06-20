@@ -48,11 +48,6 @@ on:
         required: false
         default: 60
         type: number
-      testonly:
-        description: Whether to run the tests tagged with testonly.
-        required: false
-        default: false
-        type: boolean
       checkout-ref:
         description: The ref to use for checkout.
         required: false
@@ -65,43 +60,23 @@ jobs:
   test-matrix:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.checkout-ref }}
           persist-credentials: false
       - uses: ./.github/actions/set-up-go
         name: Setup Git configuration (public)
-      - uses: ./.github/actions/set-up-gotestsum
       - run: mkdir -p test-results/go-test
-      - name: Build matrix excluding binary, integration, and testonly tests
+      - name: Build matrix excluding binary & integration tests
         id: build-non-binary
         env:
           INPUTS_TOTAL_RUNNERS: ${{ inputs.total-runners }}
-        if: ${{ !inputs.testonly }}
         run: |
-          # testonly tests need additional build tag though let's exclude them anyway for clarity
-          (
-            go list ./... github.com/openbao/openbao/api/v2/... github.com/openbao/openbao/sdk/v2/... | grep -v "_binary" | grep -v "vault/integ" | grep -v "testonly" | gotestsum tool ci-matrix --debug \
+          go list ./... github.com/openbao/openbao/api/v2/... github.com/openbao/openbao/sdk/v2/... \
+            | grep -v "_binary" \
+            | go tool -modfile=tools/go.mod gotestsum tool ci-matrix --debug \
               --partitions "$INPUTS_TOTAL_RUNNERS" \
               --timing-files 'test-results/go-test/*.json' > matrix.json
-          )
-      - name: Build matrix for tests tagged with testonly
-        env:
-          INPUTS_TOTAL_RUNNERS: ${{ inputs.total-runners }}
-        if: ${{ inputs.testonly }}
-        run: |
-          set -exo pipefail
-          # enable glob expansion
-          shopt -s nullglob
-          # testonly tagged tests need an additional tag to be included
-          # also running some extra tests for sanity checking with the testonly build tag
-          (
-            go list -tags=testonly ./vault/external_tests/{kv,token,*replication-perf*,*testonly*} ./vault/ | gotestsum tool ci-matrix --debug \
-              --partitions "$INPUTS_TOTAL_RUNNERS" \
-              --timing-files 'test-results/go-test/*.json' > matrix.json
-          )
-          # disable glob expansion
-          shopt -u nullglob
       - name: Capture list of binary tests
         if: inputs.binary-tests
         id: list-binary-tests
@@ -153,7 +128,7 @@ jobs:
     env:
       TIMEOUT_IN_MINUTES: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.checkout-ref }}
           persist-credentials: false
@@ -164,8 +139,7 @@ jobs:
           git config --global url."https://${{ secrets.ELEVATED_GITHUB_TOKEN}}@github.com".insteadOf https://github.com
       - id: build
         if: inputs.binary-tests && matrix.id == inputs.total-runners
-        run: time make ci-bootstrap dev
-      - uses: ./.github/actions/set-up-gotestsum
+        run: time make dev
       - id: run-go-tests
         name: Run Go tests
         timeout-minutes: ${{ fromJSON(env.TIMEOUT_IN_MINUTES) }}
@@ -203,7 +177,7 @@ jobs:
 
           # shellcheck disable=SC2086 # can't quote RERUN_FAILS
           GOARCH="$INPUTS_GO_ARCH" \
-            gotestsum --format=short-verbose \
+            go tool -modfile=tools/go.mod gotestsum --format=short-verbose \
               --junitfile test-results/go-test/results-${{ matrix.id }}.xml \
               --jsonfile test-results/go-test/results-${{ matrix.id }}.json \
               --jsonfile-timing-events "failure-summary-${{ matrix.id }}${{ inputs.name != '' && '-' || '' }}$INPUTS_NAME.json" \
@@ -215,9 +189,9 @@ jobs:
               -parallel=${{ inputs.go-test-parallelism }} \
               $INPUTS_EXTRA_FLAGS \
       - name: Archive test results
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-results-${{ matrix.id }}${{ inputs.name != '' && '-' || '' }}${{ inputs.name }}
+          name: test-results-${{ matrix.id }}-${{ inputs.name == '' && 'default' || inputs.name }}
           path: test-results/go-test
         if: success() || failure()
       # GitHub Actions doesn't expose the job ID or the URL to the job execution,
@@ -225,7 +199,7 @@ jobs:
       - name: Fetch job logs URL
         env:
           INPUTS_NAME: ${{ inputs.name }}
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         if: success() || failure()
         continue-on-error: true
         with:
@@ -289,7 +263,7 @@ jobs:
           "failure-summary-${{ matrix.id }}${{ inputs.name != '' && '-' || '' }}$INPUTS_NAME.json" \
           >> "failure-summary-${{ matrix.id }}${{ inputs.name != '' && '-' || '' }}$INPUTS_NAME.md"
       - name: Upload failure summary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success() || failure()
         with:
           name: failure-summary-${{ matrix.id }}${{ inputs.name != '' && '-' || '' }}${{inputs.name}}
@@ -298,18 +272,22 @@ jobs:
   test-collect-reports:
     if: ${{ ! cancelled() }}
     needs: [test-go, test-matrix]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test-results/go-test
           key: go-test-reports-${{ github.run_number }}
           restore-keys: go-test-reports-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: test-results/go-test
-          pattern: test-results-*
+          pattern: test-results-*-${{ inputs.name == '' && 'default' || inputs.name }}
           merge-multiple: true
+      - name: Test Summary
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2.6
+        with:
+          paths: "test-results/go-test/results-*.xml"
       - env:
           EXPECTED_IDS: ${{ needs.test-matrix.outputs.matrix_ids }}
         run: |

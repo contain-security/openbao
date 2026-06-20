@@ -10,22 +10,17 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fatih/structs"
 	"github.com/hashicorp/cli"
 	"github.com/hashicorp/go-secure-stdlib/password"
 	"github.com/openbao/openbao/api/v2"
 	"github.com/openbao/openbao/helper/pgpkeys"
+	"github.com/openbao/openbao/sdk/v2/helper/structtomap"
 	"github.com/posener/complete"
 )
 
 var (
 	_ cli.Command             = (*OperatorRekeyCommand)(nil)
 	_ cli.CommandAutocomplete = (*OperatorRekeyCommand)(nil)
-)
-
-const (
-	keyTypeRecovery = "Recovery"
-	keyTypeUnseal   = "Unseal"
 )
 
 type OperatorRekeyCommand struct {
@@ -57,6 +52,10 @@ func (c *OperatorRekeyCommand) Help() string {
 	helpText := `
 Usage: bao operator rekey [options] [KEY]
 
+  WARNING: this method is deprecated, please use:
+    $ bao operator rotate-keys
+  instead.
+
   Generates a new set of unseal keys. This can optionally change the total
   number of key shares or the required threshold of those key shares to
   reconstruct the root key. This operation is zero downtime, but it requires
@@ -68,7 +67,7 @@ Usage: bao operator rekey [options] [KEY]
   a TTY is available, the command will prompt for text.
 
   If the flag -target=recovery is supplied, then this operation will require a
-  quorum of recovery keys in order to generate a new set of recovery keys. 
+  quorum of recovery keys in order to generate a new set of recovery keys.
 
   Initialize a rekey:
 
@@ -106,7 +105,6 @@ Usage: bao operator rekey [options] [KEY]
 
 func (c *OperatorRekeyCommand) Flags() *FlagSets {
 	set := c.flagSet(FlagSetHTTP | FlagSetOutputFormat)
-
 	f := set.NewFlagSet("Common Options")
 
 	f.BoolVar(&BoolVar{
@@ -171,8 +169,7 @@ func (c *OperatorRekeyCommand) Flags() *FlagSets {
 		Default:    "barrier",
 		EnvVar:     "",
 		Completion: complete.PredictSet("barrier", "recovery"),
-		Usage: "Target for rekeying. \"recovery\" only applies when HSM support " +
-			"is enabled.",
+		Usage:      "Target for rekeying. \"recovery\" only applies for auto-seals.",
 	})
 
 	f.BoolVar(&BoolVar{
@@ -279,13 +276,15 @@ func (c *OperatorRekeyCommand) Run(args []string) int {
 // init starts the rekey process.
 func (c *OperatorRekeyCommand) init(client *api.Client) int {
 	// Handle the different API requests
-	var fn func(*api.RekeyInitRequest) (*api.RekeyStatusResponse, error)
+	var fn func(*api.RotateInitRequest) (*api.RotateStatusResponse, error)
 	keyTypeRequired := keyTypeUnseal
 	switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
 	case "barrier":
+		//nolint:staticcheck // endpoint already marked as deprecated
 		fn = client.Sys().RekeyInit
 	case "recovery", "hsm":
 		keyTypeRequired = keyTypeRecovery
+		//nolint:staticcheck // endpoint already marked as deprecated
 		fn = client.Sys().RekeyRecoveryKeyInit
 	default:
 		c.UI.Error(fmt.Sprintf("Unknown target: %s", c.flagTarget))
@@ -293,7 +292,7 @@ func (c *OperatorRekeyCommand) init(client *api.Client) int {
 	}
 
 	// Make the request
-	status, err := fn(&api.RekeyInitRequest{
+	status, err := fn(&api.RotateInitRequest{
 		SecretShares:        c.flagKeyShares,
 		SecretThreshold:     c.flagKeyThreshold,
 		PGPKeys:             c.flagPGPKeys,
@@ -305,21 +304,29 @@ func (c *OperatorRekeyCommand) init(client *api.Client) int {
 		return 2
 	}
 
-	// Print warnings about recovery, etc.
-	if len(c.flagPGPKeys) == 0 {
-		if Format(c.UI) == "table" {
+	if Format(c.UI) == "table" {
+		// special case when we rotate root key while running auto seal
+		// meaning we do not rotate unseal/recovery shares.
+		if status.T == 0 && status.N == 0 {
+			c.UI.Output("")
+			c.UI.Info("Rotating barrier root key using recovery shares.")
+			c.UI.Output("")
+			return printRotationStatus(c.UI, status)
+		}
+
+		// Print warnings about recovery, etc.
+		if len(c.flagPGPKeys) == 0 {
 			c.UI.Warn(wrapAtLength(
 				fmt.Sprintf("WARNING! If you lose the keys after they are returned, there is no "+
 					"recovery. Consider canceling this operation and re-initializing "+
 					"with the -pgp-keys flag to protect the returned %s keys along "+
 					"with -backup to allow recovery of the encrypted keys in case of "+
-					"emergency. You can delete the stored keys later using the -delete "+
-					"flag.", strings.ToLower(keyTypeRequired))))
+					"emergency. You can delete the backed up keys later using the -delete "+
+					"flag.", strings.ToLower(keyTypeRequired)),
+			))
 			c.UI.Output("")
 		}
-	}
-	if len(c.flagPGPKeys) > 0 && !c.flagBackup {
-		if Format(c.UI) == "table" {
+		if len(c.flagPGPKeys) > 0 && !c.flagBackup {
 			c.UI.Warn(wrapAtLength(
 				fmt.Sprintf("WARNING! You are using PGP keys for encrypted the resulting %s "+
 					"keys, but you did not enable the option to backup the keys to "+
@@ -327,13 +334,14 @@ func (c *OperatorRekeyCommand) init(client *api.Client) int {
 					"returned, you will not be able to recover them. Consider canceling "+
 					"this operation and re-running with -backup to allow recovery of the "+
 					"encrypted unseal keys in case of emergency. You can delete the "+
-					"stored keys later using the -delete flag.", strings.ToLower(keyTypeRequired))))
+					"backed up keys later using the -delete flag.", strings.ToLower(keyTypeRequired)),
+			))
 			c.UI.Output("")
 		}
 	}
 
-	// Provide the current status
-	return c.printStatus(status)
+	// Provide current status.
+	return printRotationStatus(c.UI, status)
 }
 
 // cancel is used to abort the rekey process.
@@ -342,13 +350,17 @@ func (c *OperatorRekeyCommand) cancel(client *api.Client) int {
 	var fn func() error
 	switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
 	case "barrier":
+		//nolint:staticcheck // endpoint already marked as deprecated
 		fn = client.Sys().RekeyCancel
 		if c.flagVerify {
+			//nolint:staticcheck // endpoint already marked as deprecated
 			fn = client.Sys().RekeyVerificationCancel
 		}
 	case "recovery", "hsm":
+		//nolint:staticcheck // endpoint already marked as deprecated
 		fn = client.Sys().RekeyRecoveryKeyCancel
 		if c.flagVerify {
+			//nolint:staticcheck // endpoint already marked as deprecated
 			fn = client.Sys().RekeyRecoveryKeyVerificationCancel
 		}
 
@@ -376,32 +388,40 @@ func (c *OperatorRekeyCommand) provide(client *api.Client, key string) int {
 	switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
 	case "barrier":
 		statusFn = func() (interface{}, error) {
+			//nolint:staticcheck // endpoint already marked as deprecated
 			return client.Sys().RekeyStatus()
 		}
 		updateFn = func(s1 string, s2 string) (interface{}, error) {
+			//nolint:staticcheck // endpoint already marked as deprecated
 			return client.Sys().RekeyUpdate(s1, s2)
 		}
 		if c.flagVerify {
 			statusFn = func() (interface{}, error) {
+				//nolint:staticcheck // endpoint already marked as deprecated
 				return client.Sys().RekeyVerificationStatus()
 			}
 			updateFn = func(s1 string, s2 string) (interface{}, error) {
+				//nolint:staticcheck // endpoint already marked as deprecated
 				return client.Sys().RekeyVerificationUpdate(s1, s2)
 			}
 		}
 	case "recovery", "hsm":
 		keyTypeRequired = keyTypeRecovery
 		statusFn = func() (interface{}, error) {
+			//nolint:staticcheck // endpoint already marked as deprecated
 			return client.Sys().RekeyRecoveryKeyStatus()
 		}
 		updateFn = func(s1 string, s2 string) (interface{}, error) {
+			//nolint:staticcheck // endpoint already marked as deprecated
 			return client.Sys().RekeyRecoveryKeyUpdate(s1, s2)
 		}
 		if c.flagVerify {
 			statusFn = func() (interface{}, error) {
+				//nolint:staticcheck // endpoint already marked as deprecated
 				return client.Sys().RekeyRecoveryKeyVerificationStatus()
 			}
 			updateFn = func(s1 string, s2 string) (interface{}, error) {
+				//nolint:staticcheck // endpoint already marked as deprecated
 				return client.Sys().RekeyRecoveryKeyVerificationUpdate(s1, s2)
 			}
 		}
@@ -420,11 +440,11 @@ func (c *OperatorRekeyCommand) provide(client *api.Client, key string) int {
 	var nonce string
 
 	switch status := status.(type) {
-	case *api.RekeyStatusResponse:
+	case *api.RotateStatusResponse:
 		stat := status
 		started = stat.Started
 		nonce = stat.Nonce
-	case *api.RekeyVerificationStatusResponse:
+	case *api.RotateVerificationStatusResponse:
 		stat := status
 		started = stat.Started
 		nonce = stat.Nonce
@@ -438,7 +458,8 @@ func (c *OperatorRekeyCommand) provide(client *api.Client, key string) int {
 	if !started {
 		c.UI.Error(wrapAtLength(
 			"No rekey is in progress. Start a rekey process by running " +
-				"\"bao operator rekey -init\"."))
+				"\"bao operator rekey -init\".",
+		))
 		return 1
 	}
 
@@ -447,7 +468,7 @@ func (c *OperatorRekeyCommand) provide(client *api.Client, key string) int {
 		nonce = c.flagNonce
 
 		// Pull our fake stdin if needed
-		stdin := (io.Reader)(os.Stdin)
+		stdin := io.Reader(os.Stdin)
 		if c.testStdin != nil {
 			stdin = c.testStdin
 		}
@@ -470,10 +491,10 @@ func (c *OperatorRekeyCommand) provide(client *api.Client, key string) int {
 		}
 
 		w := getWriterFromUI(c.UI)
-		fmt.Fprintf(w, "Rekey operation nonce: %s\n", nonce)
-		fmt.Fprintf(w, "%s Key (will be hidden): ", keyTypeRequired)
+		_, _ = fmt.Fprintf(w, "Rekey operation nonce: %s\n", nonce)
+		_, _ = fmt.Fprintf(w, "%s Key (will be hidden): ", keyTypeRequired)
 		key, err = password.Read(os.Stdin)
-		fmt.Fprintf(w, "\n")
+		_, _ = fmt.Fprintf(w, "\n")
 		if err != nil {
 			if err == password.ErrInterrupted {
 				c.UI.Error("user canceled")
@@ -513,10 +534,10 @@ func (c *OperatorRekeyCommand) provide(client *api.Client, key string) int {
 	var mightContainUnsealKeys bool
 
 	switch resp := resp.(type) {
-	case *api.RekeyUpdateResponse:
+	case *api.RotateUpdateResponse:
 		complete = resp.Complete
 		mightContainUnsealKeys = true
-	case *api.RekeyVerificationUpdateResponse:
+	case *api.RotateVerificationUpdateResponse:
 		complete = resp.Complete
 	default:
 		c.UI.Error("Unknown update response type")
@@ -528,8 +549,12 @@ func (c *OperatorRekeyCommand) provide(client *api.Client, key string) int {
 	}
 
 	if mightContainUnsealKeys {
-		return c.printUnsealKeys(client, status.(*api.RekeyStatusResponse),
-			resp.(*api.RekeyUpdateResponse))
+		if Format(c.UI) != "table" {
+			return OutputData(c.UI, resp)
+		}
+		c.UI.Output("")
+		printUnsealKeys(c.UI, resp.(*api.RotateUpdateResponse))
+		return c.printWarnings(client, status.(*api.RotateStatusResponse), resp.(*api.RotateUpdateResponse))
 	}
 
 	c.UI.Output(wrapAtLength("Rekey verification successful. The rekey operation is complete and the new keys are now active."))
@@ -543,19 +568,23 @@ func (c *OperatorRekeyCommand) status(client *api.Client) int {
 	switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
 	case "barrier":
 		fn = func() (interface{}, error) {
+			//nolint:staticcheck // endpoint already marked as deprecated
 			return client.Sys().RekeyStatus()
 		}
 		if c.flagVerify {
 			fn = func() (interface{}, error) {
+				//nolint:staticcheck // endpoint already marked as deprecated
 				return client.Sys().RekeyVerificationStatus()
 			}
 		}
 	case "recovery", "hsm":
 		fn = func() (interface{}, error) {
+			//nolint:staticcheck // endpoint already marked as deprecated
 			return client.Sys().RekeyRecoveryKeyStatus()
 		}
 		if c.flagVerify {
 			fn = func() (interface{}, error) {
+				//nolint:staticcheck // endpoint already marked as deprecated
 				return client.Sys().RekeyRecoveryKeyVerificationStatus()
 			}
 		}
@@ -571,17 +600,19 @@ func (c *OperatorRekeyCommand) status(client *api.Client) int {
 		return 2
 	}
 
-	return c.printStatus(status)
+	return printRotationStatus(c.UI, status)
 }
 
 // backupRetrieve retrieves the stored backup keys.
 func (c *OperatorRekeyCommand) backupRetrieve(client *api.Client) int {
 	// Handle the different API requests
-	var fn func() (*api.RekeyRetrieveResponse, error)
+	var fn func() (*api.RotateRetrieveResponse, error)
 	switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
 	case "barrier":
+		//nolint:staticcheck // endpoint already marked as deprecated
 		fn = client.Sys().RekeyRetrieveBackup
 	case "recovery", "hsm":
+		//nolint:staticcheck // endpoint already marked as deprecated
 		fn = client.Sys().RekeyRetrieveRecoveryBackup
 	default:
 		c.UI.Error(fmt.Sprintf("Unknown target: %s", c.flagTarget))
@@ -591,12 +622,12 @@ func (c *OperatorRekeyCommand) backupRetrieve(client *api.Client) int {
 	// Make the request
 	storedKeys, err := fn()
 	if err != nil {
-		c.UI.Error(fmt.Sprintf("Error retrieving rekey stored keys: %s", err))
+		c.UI.Error(fmt.Sprintf("Error retrieving rekey backed up keys: %s", err))
 		return 2
 	}
 
 	secret := &api.Secret{
-		Data: structs.New(storedKeys).Map(),
+		Data: structtomap.Map(storedKeys),
 	}
 
 	return OutputSecret(c.UI, secret)
@@ -608,8 +639,10 @@ func (c *OperatorRekeyCommand) backupDelete(client *api.Client) int {
 	var fn func() error
 	switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
 	case "barrier":
+		//nolint:staticcheck // endpoint already marked as deprecated
 		fn = client.Sys().RekeyDeleteBackup
 	case "recovery", "hsm":
+		//nolint:staticcheck // endpoint already marked as deprecated
 		fn = client.Sys().RekeyDeleteRecoveryBackup
 	default:
 		c.UI.Error(fmt.Sprintf("Unknown target: %s", c.flagTarget))
@@ -618,99 +651,31 @@ func (c *OperatorRekeyCommand) backupDelete(client *api.Client) int {
 
 	// Make the request
 	if err := fn(); err != nil {
-		c.UI.Error(fmt.Sprintf("Error deleting rekey stored keys: %s", err))
+		c.UI.Error(fmt.Sprintf("Error deleting rekey backed up keys: %s", err))
 		return 2
 	}
 
-	c.UI.Output("Success! Delete stored keys (if they existed)")
+	c.UI.Output("Success! Deleted backed up keys (if they existed)")
 	return 0
 }
 
-// printStatus dumps the status to output
-func (c *OperatorRekeyCommand) printStatus(in interface{}) int {
-	out := []string{}
-	out = append(out, "Key | Value")
-
-	switch in := in.(type) {
-	case *api.RekeyStatusResponse:
-		status := in
-		out = append(out, fmt.Sprintf("Nonce | %s", status.Nonce))
-		out = append(out, fmt.Sprintf("Started | %t", status.Started))
-		if status.Started {
-			if status.Progress == status.Required {
-				out = append(out, fmt.Sprintf("Rekey Progress | %d/%d (verification in progress)", status.Progress, status.Required))
-			} else {
-				out = append(out, fmt.Sprintf("Rekey Progress | %d/%d", status.Progress, status.Required))
-			}
-			out = append(out, fmt.Sprintf("New Shares | %d", status.N))
-			out = append(out, fmt.Sprintf("New Threshold | %d", status.T))
-			out = append(out, fmt.Sprintf("Verification Required | %t", status.VerificationRequired))
-			if status.VerificationNonce != "" {
-				out = append(out, fmt.Sprintf("Verification Nonce | %s", status.VerificationNonce))
-			}
-		}
-		if len(status.PGPFingerprints) > 0 {
-			out = append(out, fmt.Sprintf("PGP Fingerprints | %s", status.PGPFingerprints))
-			out = append(out, fmt.Sprintf("Backup | %t", status.Backup))
-		}
-	case *api.RekeyVerificationStatusResponse:
-		status := in
-		out = append(out, fmt.Sprintf("Started | %t", status.Started))
-		out = append(out, fmt.Sprintf("New Shares | %d", status.N))
-		out = append(out, fmt.Sprintf("New Threshold | %d", status.T))
-		out = append(out, fmt.Sprintf("Verification Nonce | %s", status.Nonce))
-		out = append(out, fmt.Sprintf("Verification Progress | %d/%d", status.Progress, status.T))
-	default:
-		c.UI.Error("Unknown status type")
-		return 1
-	}
-
-	switch Format(c.UI) {
-	case "table":
-		c.UI.Output(tableOutput(out, nil))
+func (c *OperatorRekeyCommand) printWarnings(client *api.Client, status *api.RotateStatusResponse, resp *api.RotateUpdateResponse) int {
+	// barrier root key rotation while running auto seal case.
+	if len(resp.Keys) == 0 {
+		c.UI.Output("")
+		c.UI.Output("Barrier root key rotated using recovery keys.")
 		return 0
-	default:
-		return OutputData(c.UI, in)
-	}
-}
-
-func (c *OperatorRekeyCommand) printUnsealKeys(client *api.Client, status *api.RekeyStatusResponse, resp *api.RekeyUpdateResponse) int {
-	switch Format(c.UI) {
-	case "table":
-	default:
-		return OutputData(c.UI, resp)
 	}
 
-	// Space between the key prompt, if any, and the output
-	c.UI.Output("")
-
-	// Provide the keys
-	var haveB64 bool
-	if resp.KeysB64 != nil && len(resp.KeysB64) == len(resp.Keys) {
-		haveB64 = true
-	}
-	for i, key := range resp.Keys {
-		if len(resp.PGPFingerprints) > 0 {
-			if haveB64 {
-				c.UI.Output(fmt.Sprintf("Key %d fingerprint: %s; value: %s", i+1, resp.PGPFingerprints[i], resp.KeysB64[i]))
-			} else {
-				c.UI.Output(fmt.Sprintf("Key %d fingerprint: %s; value: %s", i+1, resp.PGPFingerprints[i], key))
-			}
-		} else {
-			if haveB64 {
-				c.UI.Output(fmt.Sprintf("Key %d: %s", i+1, resp.KeysB64[i]))
-			} else {
-				c.UI.Output(fmt.Sprintf("Key %d: %s", i+1, key))
-			}
-		}
+	if resp.Nonce != "" {
+		c.UI.Output("")
+		c.UI.Output(fmt.Sprintf("Operation nonce: %s", resp.Nonce))
 	}
 
-	c.UI.Output("")
-	c.UI.Output(fmt.Sprintf("Operation nonce: %s", resp.Nonce))
-
+	target := strings.ToLower(strings.TrimSpace(c.flagTarget))
 	if len(resp.PGPFingerprints) > 0 && resp.Backup {
 		c.UI.Output("")
-		switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
+		switch target {
 		case "barrier":
 			c.UI.Output(wrapAtLength(fmt.Sprintf(
 				"The encrypted unseal keys are backed up to \"core/unseal-keys-backup\" " +
@@ -728,59 +693,41 @@ func (c *OperatorRekeyCommand) printUnsealKeys(client *api.Client, status *api.R
 		}
 	}
 
-	switch status.VerificationRequired {
-	case false:
-		c.UI.Output("")
-		switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
-		case "barrier":
-			c.UI.Output(wrapAtLength(fmt.Sprintf(
-				"Vault unseal keys rekeyed with %d key shares and a key threshold of %d. Please "+
-					"securely distribute the key shares printed above. When Vault is "+
-					"re-sealed, restarted, or stopped, you must supply at least %d of "+
-					"these keys to unseal it before it can start servicing requests.",
-				status.N,
-				status.T,
-				status.T)))
-		case "recovery", "hsm":
-			c.UI.Output(wrapAtLength(fmt.Sprintf(
-				"Vault recovery keys rekeyed with %d key shares and a key threshold of %d. Please "+
-					"securely distribute the key shares printed above.",
-				status.N,
-				status.T)))
-		}
-
-	default:
+	if status.VerificationRequired {
 		c.UI.Output("")
 		var warningText string
-		switch strings.ToLower(strings.TrimSpace(c.flagTarget)) {
+		switch target {
 		case "barrier":
 			c.UI.Output(wrapAtLength(fmt.Sprintf(
-				"Vault has created a new unseal key, split into %d key shares and a key threshold "+
-					"of %d. These will not be active until after verification is complete. "+
-					"Please securely distribute the key shares printed above. When Vault "+
-					"is re-sealed, restarted, or stopped, you must supply at least %d of "+
-					"these keys to unseal it before it can start servicing requests.",
+				"OpenBao has created a new unseal key, split into %d key shares and a "+
+					"key threshold of %d. These will not be active until after verification is "+
+					"complete. Please securely distribute the key shares printed above. When "+
+					" OpenBao is re-sealed, restarted, or stopped, you must supply at least %d "+
+					"of these keys to unseal it before it can start servicing requests.",
 				status.N,
 				status.T,
-				status.T)))
+				status.T,
+			)))
 			warningText = "unseal"
 		case "recovery", "hsm":
 			c.UI.Output(wrapAtLength(fmt.Sprintf(
-				"Vault has created a new recovery key, split into %d key shares and a key threshold "+
-					"of %d. These will not be active until after verification is complete. "+
-					"Please securely distribute the key shares printed above.",
+				"OpenBao has created a new recovery key, split into %d key shares and a "+
+					"key threshold of %d. These will not be active until after verification is "+
+					"complete. Please securely distribute the key shares printed above.",
 				status.N,
-				status.T)))
+				status.T,
+			)))
 			warningText = "authenticate with"
-
 		}
+
 		c.UI.Output("")
 		c.UI.Warn(wrapAtLength(fmt.Sprintf(
 			"Again, these key shares are _not_ valid until verification is performed. "+
 				"Do not lose or discard your current key shares until after verification "+
-				"is complete or you will be unable to %s Vault. If you cancel the "+
-				"rekey process or seal Vault before verification is complete the new "+
-				"shares will be discarded and the current shares will remain valid.", warningText)))
+				"is complete or you will be unable to %s OpenBao. If you cancel the "+
+				"rekey process or seal OpenBao before verification is complete the new "+
+				"shares will be discarded and the current shares will remain valid.", warningText,
+		)))
 		c.UI.Output("")
 		c.UI.Warn(wrapAtLength(
 			"The current verification status, including initial nonce, is shown below.",
@@ -789,6 +736,27 @@ func (c *OperatorRekeyCommand) printUnsealKeys(client *api.Client, status *api.R
 
 		c.flagVerify = true
 		return c.status(client)
+	} else {
+		c.UI.Output("")
+		switch target {
+		case "barrier":
+			c.UI.Output(wrapAtLength(fmt.Sprintf(
+				"OpenBao unseal keys rekeyed to %d key shares and a key threshold of %d. "+
+					"Please securely distribute the key shares printed above. When OpenBao is "+
+					"re-sealed, restarted, or stopped, you must supply at least %d of "+
+					"these keys to unseal it before it can start servicing requests.",
+				status.N,
+				status.T,
+				status.T,
+			)))
+		case "recovery", "hsm":
+			c.UI.Output(wrapAtLength(fmt.Sprintf(
+				"OpenBao recovery keys rekeyed to %d key shares and a key threshold of %d. "+
+					"Please securely distribute the key shares printed above.",
+				status.N,
+				status.T,
+			)))
+		}
 	}
 
 	return 0

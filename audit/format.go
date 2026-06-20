@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strings"
 	"time"
 
-	"github.com/go-jose/go-jose/v3/jwt"
+	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/openbao/openbao/helper/namespace"
+	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/helper/salt"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
@@ -167,7 +169,7 @@ func (f *AuditFormatter) FormatRequest(ctx context.Context, w io.Writer, config 
 		reqEntry.Time = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 
-	return f.AuditFormatWriter.WriteRequest(w, reqEntry)
+	return f.WriteRequest(w, reqEntry)
 }
 
 func (f *AuditFormatter) FormatResponse(ctx context.Context, w io.Writer, config FormatterConfig, in *logical.LogInput) error {
@@ -211,9 +213,7 @@ func (f *AuditFormatter) FormatResponse(ctx context.Context, w io.Writer, config
 		if elideListResponseData && resp.Data != nil {
 			// Copy the data map before making changes, but we only need to go one level deep in this case
 			respData = make(map[string]interface{}, len(resp.Data))
-			for k, v := range resp.Data {
-				respData[k] = v
-			}
+			maps.Copy(respData, resp.Data)
 
 			doElideListResponseData(respData)
 		} else {
@@ -389,7 +389,7 @@ func (f *AuditFormatter) FormatResponse(ctx context.Context, w io.Writer, config
 		respEntry.Time = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 
-	return f.AuditFormatWriter.WriteResponse(w, respEntry)
+	return f.WriteResponse(w, respEntry)
 }
 
 // AuditRequestEntry is the structure of a request audit log entry in Audit.
@@ -399,7 +399,7 @@ type AuditRequestEntry struct {
 	Auth          *AuditAuth    `json:"auth,omitempty"`
 	Request       *AuditRequest `json:"request,omitempty"`
 	Error         string        `json:"error,omitempty"`
-	ForwardedFrom string        `json:"forwarded_from,omitempty"` // Populated in Enterprise when a request is forwarded
+	ForwardedFrom string        `json:"forwarded_from,omitempty"`
 }
 
 // AuditResponseEntry is the structure of a response audit log entry in Audit.
@@ -529,14 +529,14 @@ func getClientCertificateSerialNumber(connState *tls.ConnectionState) string {
 	return connState.VerifiedChains[0][0].SerialNumber.String()
 }
 
-// parseVaultTokenFromJWT returns a string iff the token was a JWT and we could
+// parseVaultTokenFromJWT returns a string if the token was a JWT and we could
 // extract the original token ID from inside
 func parseVaultTokenFromJWT(token string) *string {
 	if strings.Count(token, ".") != 2 {
 		return nil
 	}
 
-	parsedJWT, err := jwt.ParseSigned(token)
+	parsedJWT, err := jwt.ParseSigned(token, consts.AllowedJWTSignatureAlgorithmsBao)
 	if err != nil {
 		return nil
 	}
@@ -554,41 +554,33 @@ func NewTemporaryFormatter(format, prefix string) *AuditFormatter {
 	temporarySalt := func(ctx context.Context) (*salt.Salt, error) {
 		return salt.NewNonpersistentSalt(), nil
 	}
-	ret := &AuditFormatter{}
-
-	switch format {
-	case "jsonx":
-		ret.AuditFormatWriter = &JSONxFormatWriter{
+	return &AuditFormatter{
+		AuditFormatWriter: &JSONFormatWriter{
 			Prefix:   prefix,
 			SaltFunc: temporarySalt,
-		}
-	default:
-		ret.AuditFormatWriter = &JSONFormatWriter{
-			Prefix:   prefix,
-			SaltFunc: temporarySalt,
-		}
+		},
 	}
-	return ret
 }
 
-// doElideListResponseData performs the actual elision of list operation response data, once surrounding code has
-// determined it should apply to a particular request. The data map that is passed in must be a copy that is safe to
-// modify in place, but need not be a full recursive deep copy, as only top-level keys are changed.
+// doElideListResponseData performs the actual elision of list operation
+// response data, once surrounding code has determined it should apply to
+// a particular request. The data map that is passed in must be a copy that
+// is safe to modify in place, but need not be a full recursive deep copy,
+// as only top-level keys are changed.
 //
 // See the documentation of the controlling option in FormatterConfig for more information on the purpose.
 func doElideListResponseData(data map[string]interface{}) {
-	doElideListResponseDataWithCopy(data, data)
-}
-
-func doElideListResponseDataWithCopy(inputData map[string]interface{}, outputData map[string]interface{}) {
-	for k, v := range inputData {
-		if k == "keys" {
-			if vSlice, ok := v.([]string); ok {
-				outputData[k] = len(vSlice)
+	for k, v := range data {
+		switch k {
+		case "keys":
+			if vSlice, ok := v.([]interface{}); ok {
+				data[k] = len(vSlice)
+			} else if vSlice, ok := v.([]string); ok {
+				data[k] = len(vSlice)
 			}
-		} else if k == "key_info" {
+		case "key_info":
 			if vMap, ok := v.(map[string]interface{}); ok {
-				outputData[k] = len(vMap)
+				data[k] = len(vMap)
 			}
 		}
 	}

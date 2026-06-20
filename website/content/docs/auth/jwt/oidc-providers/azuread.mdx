@@ -38,10 +38,10 @@ Reference: [Azure Active Directory v2.0 and the OpenID Connect protocol](https:/
 
 ### Connect AD group with OpenBao external group
 
-To connect the AD group with a [OpenBao external groups](/docs/secrets/identity#external-vs-internal-groups),
+To connect the AD group with a [OpenBao external groups](../../../concepts/identity.mdx#external-vs-internal-groups),
 you will need
 [Azure AD v2.0 endpoints](https://docs.microsoft.com/en-gb/azure/active-directory/develop/azure-ad-endpoint-comparison).
-You should set up a [OpenBao policy](/docs/concepts/policies) for the Azure AD group to use.
+You should set up a [OpenBao policy](../../../concepts/policies.mdx) for the Azure AD group to use.
 
 1. Go to **Azure Active Directory** and choose your OpenBao application.
 
@@ -61,7 +61,7 @@ You should set up a [OpenBao policy](/docs/concepts/policies) for the Azure AD g
       oidc_discovery_url="https://login.microsoftonline.com/tenant_id/v2.0"
    ```
 
-1. Configure the [OIDC Role](/api-docs/auth/jwt#create-role) with the following:
+2. Configure the [OIDC Role](/api-docs/auth/jwt#createupdate-role) with the following:
 
    - `user_claim` should be `"sub"` or `"oid"` following the
    [recommendation](https://docs.microsoft.com/en-us/azure/active-directory/develop/id-tokens#using-claims-to-reliably-identify-a-user-subject-and-object-id)
@@ -69,7 +69,7 @@ You should set up a [OpenBao policy](/docs/concepts/policies) for the Azure AD g
    - `allowed_redirect_uris` should be the two redirect URIs for OpenBao CLI and UI access.
    - `groups_claim` should be set to `"groups"`.
    - `oidc_scopes` should be set to `"https://graph.microsoft.com/.default"`.
-   
+
    ```shell
    bao write auth/oidc/role/your_default_role \
       user_claim="sub" \

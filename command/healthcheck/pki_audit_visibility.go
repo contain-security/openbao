@@ -5,6 +5,7 @@ package healthcheck
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/hashicorp/go-secure-stdlib/parseutil"
 )
@@ -141,7 +142,7 @@ func (h *AuditVisibility) Evaluate(e *Executor) (results []*Result, err error) {
 		}
 
 		results = append(results, &ret)
-		return
+		return results, err
 	}
 
 	sourceMap := map[string][]string{
@@ -155,15 +156,7 @@ func (h *AuditVisibility) Evaluate(e *Executor) (results []*Result, err error) {
 		}
 
 		for _, param := range visibleList {
-			found := false
-			for _, tuned := range actual {
-				if param == tuned {
-					found = true
-					break
-				}
-			}
-
-			if !found {
+			if !slices.Contains(actual, param) {
 				ret := Result{
 					Status:   ResultInformational,
 					Endpoint: "/sys/mounts/{{mount}}/tune",
@@ -184,15 +177,7 @@ func (h *AuditVisibility) Evaluate(e *Executor) (results []*Result, err error) {
 			return nil, fmt.Errorf("error parsing %v from server: %v", source, err)
 		}
 		for _, param := range hiddenList {
-			found := false
-			for _, tuned := range actual {
-				if param == tuned {
-					found = true
-					break
-				}
-			}
-
-			if found {
+			if slices.Contains(actual, param) {
 				ret := Result{
 					Status:   ResultWarning,
 					Endpoint: "/sys/mounts/{{mount}}/tune",
@@ -212,5 +197,5 @@ func (h *AuditVisibility) Evaluate(e *Executor) (results []*Result, err error) {
 		results = append(results, &ret)
 	}
 
-	return
+	return results, err
 }

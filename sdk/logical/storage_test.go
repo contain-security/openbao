@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-test/deep"
 	"github.com/hashicorp/go-hclog"
@@ -30,7 +31,7 @@ func TestScanView(t *testing.T) {
 	s := prepKeyStorage(t)
 
 	keys := make([]string, 0)
-	err := ScanView(context.Background(), s, func(path string) {
+	err := ScanView(t.Context(), s, func(path string) {
 		keys = append(keys, path)
 	})
 	if err != nil {
@@ -45,7 +46,7 @@ func TestScanView(t *testing.T) {
 func TestScanView_CancelContext(t *testing.T) {
 	s := prepKeyStorage(t)
 
-	ctx, cancelCtx := context.WithCancel(context.Background())
+	ctx, cancelCtx := context.WithCancel(t.Context())
 	var i int
 	err := ScanView(ctx, s, func(path string) {
 		cancelCtx()
@@ -64,7 +65,7 @@ func TestScanViewPaginated(t *testing.T) {
 	s := prepKeyStorage(t)
 
 	keys := make([]string, 0)
-	err := ScanViewWithLogger(context.Background(), s, nil, func(path string) {
+	err := ScanViewWithLogger(t.Context(), s, nil, func(path string) {
 		keys = append(keys, path)
 	})
 	if err != nil {
@@ -81,7 +82,7 @@ func TestScanViewPaginated(t *testing.T) {
 	logger := hclog.NewNullLogger()
 	for pageSize := 2; pageSize < 10; pageSize++ {
 		keys = make([]string, 0)
-		err = ScanViewPaginated(context.Background(), v, logger, pageSize, func(_ int, _ int, path string) (bool, error) {
+		err = ScanViewPaginated(t.Context(), v, logger, pageSize, func(_ int, _ int, path string) (bool, error) {
 			keys = append(keys, path)
 			return true, nil
 		})
@@ -102,7 +103,7 @@ func TestScanViewPaginated(t *testing.T) {
 func TestCollectKeys(t *testing.T) {
 	s := prepKeyStorage(t)
 
-	keys, err := CollectKeys(context.Background(), s)
+	keys, err := CollectKeys(t.Context(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestCollectKeys(t *testing.T) {
 func TestCollectKeysPrefix(t *testing.T) {
 	s := prepKeyStorage(t)
 
-	keys, err := CollectKeysWithPrefix(context.Background(), s, "foo")
+	keys, err := CollectKeysWithPrefix(t.Context(), s, "foo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,14 +135,14 @@ func TestCollectKeysPrefix(t *testing.T) {
 func TestClearView(t *testing.T) {
 	s := prepKeyStorage(t)
 
-	keys, err := CollectKeys(context.Background(), s)
+	keys, err := CollectKeys(t.Context(), s)
 	require.NoError(t, err)
 	require.Equal(t, keys, keyList)
 
-	err = ClearView(context.Background(), s)
+	err = ClearView(t.Context(), s)
 	require.NoError(t, err)
 
-	keys, err = CollectKeys(context.Background(), s)
+	keys, err = CollectKeys(t.Context(), s)
 	require.Nil(t, err)
 	require.Empty(t, keys)
 }
@@ -149,14 +150,14 @@ func TestClearView(t *testing.T) {
 func TestClearPaginatedView(t *testing.T) {
 	s := prepKeyStorage(t)
 
-	keys, err := CollectKeys(context.Background(), s)
+	keys, err := CollectKeys(t.Context(), s)
 	require.NoError(t, err)
 	require.Equal(t, keys, keyList)
 
-	err = ClearViewWithPagination(context.Background(), s, hclog.NewNullLogger())
+	err = ClearViewWithPagination(t.Context(), s, hclog.NewNullLogger())
 	require.NoError(t, err)
 
-	keys, err = CollectKeys(context.Background(), s)
+	keys, err = CollectKeys(t.Context(), s)
 	require.Nil(t, err)
 	require.Empty(t, keys)
 }
@@ -164,16 +165,53 @@ func TestClearPaginatedView(t *testing.T) {
 func TestClearUnpaginatedView(t *testing.T) {
 	s := prepKeyStorage(t)
 
-	keys, err := CollectKeys(context.Background(), s)
+	keys, err := CollectKeys(t.Context(), s)
 	require.NoError(t, err)
 	require.Equal(t, keys, keyList)
 
-	err = ClearViewWithoutPagination(context.Background(), s, hclog.NewNullLogger())
+	err = ClearViewWithoutPagination(t.Context(), s, hclog.NewNullLogger())
 	require.NoError(t, err)
 
-	keys, err = CollectKeys(context.Background(), s)
+	keys, err = CollectKeys(t.Context(), s)
 	require.Nil(t, err)
 	require.Empty(t, keys)
+}
+
+func TestHandleListPageTermination(t *testing.T) {
+	s := prepKeyStorage(t)
+
+	keys, err := s.List(t.Context(), "")
+	require.NoError(t, err)
+
+	var seenKeys []string
+	var batchCount int
+	err = HandleListPage(t.Context(), s, "", 2, func(page int, index int, entry string) (bool, error) {
+		seenKeys = append(seenKeys, entry)
+		return true, nil
+	}, func(page int, entries []string) (bool, error) {
+		batchCount += 1
+		return true, nil
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, seenKeys, keys)
+	require.Equal(t, batchCount, len(keys)/2)
+
+	var immediateCancel bool
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	err = HandleListPage(ctx, s, "", 2, func(page int, index int, entry string) (bool, error) {
+		immediateCancel = false
+		time.Sleep(1 * time.Second)
+		return true, nil
+	}, func(page int, entries []string) (bool, error) {
+		immediateCancel = false
+		time.Sleep(1 * time.Second)
+		return true, nil
+	})
+
+	require.Error(t, err)
+	require.False(t, immediateCancel)
+	require.Contains(t, err.Error(), "context")
 }
 
 func prepKeyStorage(t *testing.T) Storage {
@@ -181,7 +219,7 @@ func prepKeyStorage(t *testing.T) Storage {
 	s := &InmemStorage{}
 
 	for _, key := range keyList {
-		if err := s.Put(context.Background(), &StorageEntry{
+		if err := s.Put(t.Context(), &StorageEntry{
 			Key:      key,
 			Value:    nil,
 			SealWrap: false,

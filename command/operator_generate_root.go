@@ -11,10 +11,12 @@ import (
 	"strings"
 
 	"github.com/hashicorp/cli"
+	"github.com/hashicorp/go-secure-stdlib/base62"
 	"github.com/hashicorp/go-secure-stdlib/password"
 	"github.com/openbao/openbao/api/v2"
 	"github.com/openbao/openbao/helper/pgpkeys"
 	"github.com/openbao/openbao/sdk/v2/helper/roottoken"
+	"github.com/openbao/openbao/vault"
 	"github.com/posener/complete"
 )
 
@@ -268,15 +270,18 @@ func (c *OperatorGenerateRootCommand) generateOTP(client *api.Client, kind gener
 		return "", 2
 	}
 
-	otp, err := roottoken.GenerateOTP(status.OTPLength)
-	var retCode int
-	if err != nil {
-		retCode = 2
-		c.UI.Error(err.Error())
-	} else {
-		retCode = 0
+	otpLength := status.OTPLength
+	if otpLength == 0 {
+		otpLength = vault.TokenLength + vault.TokenPrefixLength
 	}
-	return otp, retCode
+
+	otp, err := base62.Random(otpLength)
+	if err != nil {
+		c.UI.Error(err.Error())
+		return "", 2
+	}
+
+	return otp, 0
 }
 
 // decode decodes the given value using the otp.
@@ -292,7 +297,7 @@ func (c *OperatorGenerateRootCommand) decode(client *api.Client, encoded, otp st
 
 	if encoded == "-" {
 		// Pull our fake stdin if needed
-		stdin := (io.Reader)(os.Stdin)
+		stdin := io.Reader(os.Stdin)
 		if c.testStdin != nil {
 			stdin = c.testStdin
 		}
@@ -390,11 +395,13 @@ func (c *OperatorGenerateRootCommand) provide(client *api.Client, key string, ki
 	if !status.Started {
 		c.UI.Error(wrapAtLength(
 			"No root generation is in progress. Start a root generation by " +
-				"running \"bao operator generate-root -init\"."))
+				"running \"bao operator generate-root -init\".",
+		))
 		c.UI.Warn(wrapAtLength(fmt.Sprintf(
 			"If starting root generation using the OTP method and generating "+
 				"your own OTP, the length of the OTP string needs to be %d "+
-				"characters in length.", status.OTPLength)))
+				"characters in length.", status.OTPLength,
+		)))
 		return 1
 	}
 
@@ -405,7 +412,7 @@ func (c *OperatorGenerateRootCommand) provide(client *api.Client, key string, ki
 		nonce = c.flagNonce
 
 		// Pull our fake stdin if needed
-		stdin := (io.Reader)(os.Stdin)
+		stdin := io.Reader(os.Stdin)
 		if c.testStdin != nil {
 			stdin = c.testStdin
 		}
@@ -430,10 +437,10 @@ func (c *OperatorGenerateRootCommand) provide(client *api.Client, key string, ki
 		}
 
 		w := getWriterFromUI(c.UI)
-		fmt.Fprintf(w, "Operation nonce: %s\n", nonce)
-		fmt.Fprintf(w, "Unseal Key (will be hidden): ")
+		_, _ = fmt.Fprintf(w, "Operation nonce: %s\n", nonce)
+		_, _ = fmt.Fprint(w, "Unseal Key (will be hidden): ")
 		key, err = password.Read(os.Stdin)
-		fmt.Fprintf(w, "\n")
+		_, _ = fmt.Fprint(w, "\n")
 		if err != nil {
 			if err == password.ErrInterrupted {
 				c.UI.Error("user canceled")
@@ -452,7 +459,7 @@ func (c *OperatorGenerateRootCommand) provide(client *api.Client, key string, ki
 		nonce = c.flagNonce
 	}
 
-	// Trim any whitespace from they key, especially since we might have prompted
+	// Trim any whitespace from the key, especially since we might have prompted
 	// the user for it.
 	key = strings.TrimSpace(key)
 

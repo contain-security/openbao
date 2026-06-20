@@ -4,16 +4,17 @@
 package cluster
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-secure-stdlib/base62"
-	"go.uber.org/atomic"
 )
 
 // InmemLayer is an in-memory implementation of NetworkLayer. This is
@@ -43,7 +44,7 @@ func NewInmemLayer(addr string, logger log.Logger) *InmemLayer {
 	return &InmemLayer{
 		addr:        addr,
 		logger:      logger,
-		stopped:     atomic.NewBool(false),
+		stopped:     &atomic.Bool{},
 		stopCh:      make(chan struct{}),
 		peers:       make(map[string]*InmemLayer),
 		servConns:   make(map[string][]net.Conn),
@@ -109,15 +110,15 @@ func (l *InmemLayer) Listeners() []NetworkListener {
 		addr:         l.addr,
 		pendingConns: make(chan net.Conn),
 
-		stopped: atomic.NewBool(false),
+		stopped: &atomic.Bool{},
 		stopCh:  make(chan struct{}),
 	}
 
 	return []NetworkListener{l.listener}
 }
 
-// Dial implements NetworkLayer.
-func (l *InmemLayer) Dial(addr string, timeout time.Duration, tlsConfig *tls.Config) (*tls.Conn, error) {
+// DialContext implements NetworkLayer.
+func (l *InmemLayer) DialContext(ctx context.Context, addr string, tlsConfig *tls.Config) (*tls.Conn, error) {
 	l.l.Lock()
 	connectionCh := l.connectionCh
 
@@ -145,18 +146,12 @@ func (l *InmemLayer) Dial(addr string, timeout time.Duration, tlsConfig *tls.Con
 		return nil, errors.New("inmemlayer: no address found")
 	}
 
-	if timeout < 0 {
-		return nil, fmt.Errorf("inmemlayer: timeout given is less than 0: %d", timeout)
-	}
-
 	alpn := ""
 	if tlsConfig != nil {
 		alpn = tlsConfig.NextProtos[0]
 	}
 
-	if l.logger.IsDebug() {
-		l.logger.Debug("dialing connection", "node", l.addr, "remote", addr, "alpn", alpn)
-	}
+	l.logger.Debug("dialing connection", "node", l.addr, "remote", addr, "alpn", alpn)
 
 	if connectionCh != nil {
 		select {
@@ -211,9 +206,7 @@ func (l *InmemLayer) clientConn(addr string) (net.Conn, error) {
 	pendingConns := l.listener.pendingConns
 	l.l.Unlock()
 
-	if l.logger.IsDebug() {
-		l.logger.Debug("received connection", "node", l.addr, "remote", addr)
-	}
+	l.logger.Debug("received connection", "node", l.addr, "remote", addr)
 	if connectionCh != nil {
 		select {
 		case connectionCh <- &ConnectionInfo{
@@ -386,7 +379,7 @@ func NewInmemLayerCluster(clusterName string, nodes int, logger log.Logger) (*In
 	}
 
 	layers := make([]*InmemLayer, nodes)
-	for i := 0; i < nodes; i++ {
+	for i := range nodes {
 		layers[i] = NewInmemLayer(fmt.Sprintf("%s_node_%d", clusterName, i), logger)
 	}
 

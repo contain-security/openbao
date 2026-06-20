@@ -8,15 +8,15 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	log "github.com/hashicorp/go-hclog"
 	"github.com/openbao/openbao/helper/metricsutil"
 	"github.com/openbao/openbao/sdk/v2/helper/logging"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/atomic"
-	"go.uber.org/goleak"
 )
 
 type clientResult struct {
@@ -34,13 +34,11 @@ func TestNewRateLimitQuota(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
-
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.rlq.initialize(logging.NewVaultLogger(log.Trace), metricsutil.BlackholeSink())
 			require.Equal(t, tc.expectErr, err != nil, err)
 			if err == nil {
-				require.Nil(t, tc.rlq.close(context.Background()))
+				require.Nil(t, tc.rlq.close(t.Context()))
 			}
 		})
 	}
@@ -49,7 +47,7 @@ func TestNewRateLimitQuota(t *testing.T) {
 func TestRateLimitQuota_Close(t *testing.T) {
 	rlq := NewRateLimitQuota("test-rate-limiter", "qa", "/foo/bar", "", "", 16.7, time.Second, time.Minute, false)
 	require.NoError(t, rlq.initialize(logging.NewVaultLogger(log.Trace), metricsutil.BlackholeSink()))
-	require.NoError(t, rlq.close(context.Background()))
+	require.NoError(t, rlq.close(t.Context()))
 
 	time.Sleep(time.Second) // allow enough time for purgeClientsLoop to receive on closeCh
 	require.False(t, rlq.getPurgeBlocked(), "expected blocked client purging to be disabled after explicit close")
@@ -69,18 +67,19 @@ func TestRateLimitQuota_Allow(t *testing.T) {
 	}
 
 	require.NoError(t, rlq.initialize(logging.NewVaultLogger(log.Trace), metricsutil.BlackholeSink()))
-	defer rlq.close(context.Background())
-
+	defer func() {
+		_ = rlq.close(t.Context())
+	}()
 	var wg sync.WaitGroup
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	reqFunc := func(addr string, atomicNumAllow, atomicNumFail *atomic.Int32) {
 		defer wg.Done()
 
 		for ctx.Err() == nil {
-			resp, err := rlq.allow(context.Background(), &Request{ClientAddress: addr})
+			resp, err := rlq.allow(t.Context(), &Request{ClientAddress: addr})
 			if err != nil {
 				return
 			}
@@ -98,13 +97,16 @@ func TestRateLimitQuota_Allow(t *testing.T) {
 
 	start := time.Now()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		wg.Add(1)
 
 		addr := fmt.Sprintf("127.0.0.%d", i)
 		cr, ok := results[addr]
 		if !ok {
-			results[addr] = &clientResult{atomicNumAllow: atomic.NewInt32(0), atomicNumFail: atomic.NewInt32(0)}
+			results[addr] = &clientResult{
+				atomicNumAllow: &atomic.Int32{},
+				atomicNumFail:  &atomic.Int32{},
+			}
 			cr = results[addr]
 		}
 
@@ -146,12 +148,14 @@ func TestRateLimitQuota_Allow_WithBlock(t *testing.T) {
 	}
 
 	require.NoError(t, rlq.initialize(logging.NewVaultLogger(log.Trace), metricsutil.BlackholeSink()))
-	defer rlq.close(context.Background())
+	defer func() {
+		_ = rlq.close(t.Context())
+	}()
 	require.True(t, rlq.getPurgeBlocked())
 
 	var wg sync.WaitGroup
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	reqFunc := func(addr string, atomicNumAllow, atomicNumFail *atomic.Int32) {
@@ -174,13 +178,16 @@ func TestRateLimitQuota_Allow_WithBlock(t *testing.T) {
 
 	results := make(map[string]*clientResult)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		wg.Add(1)
 
 		addr := fmt.Sprintf("127.0.0.%d", i)
 		cr, ok := results[addr]
 		if !ok {
-			results[addr] = &clientResult{atomicNumAllow: atomic.NewInt32(0), atomicNumFail: atomic.NewInt32(0)}
+			results[addr] = &clientResult{
+				atomicNumAllow: &atomic.Int32{},
+				atomicNumFail:  &atomic.Int32{},
+			}
 			cr = results[addr]
 		}
 
@@ -217,13 +224,13 @@ func TestRateLimitQuota_Allow_WithBlock(t *testing.T) {
 }
 
 func TestRateLimitQuota_Update(t *testing.T) {
-	defer goleak.VerifyNone(t)
-	qm, err := NewManager(logging.NewVaultLogger(log.Trace), metricsutil.BlackholeSink(), true)
+	qm, err := NewManager(logging.NewVaultLogger(log.Trace), metricsutil.BlackholeSink(), false)
 	require.NoError(t, err)
-
-	quota := NewRateLimitQuota("quota1", "", "", "", "", 10, time.Second, 0, false)
-	require.NoError(t, qm.SetQuota(context.Background(), TypeRateLimit.String(), quota, true))
-	require.NoError(t, qm.SetQuota(context.Background(), TypeRateLimit.String(), quota, true))
-
-	require.Nil(t, quota.close(context.Background()))
+	synctest.Test(t, func(t *testing.T) {
+		quota := NewRateLimitQuota("quota1", "", "", "", "", 10, time.Second, 0, false)
+		require.NoError(t, qm.SetQuota(t.Context(), TypeRateLimit.String(), quota))
+		require.NoError(t, qm.SetQuota(t.Context(), TypeRateLimit.String(), quota))
+		require.Nil(t, quota.close(t.Context()))
+		synctest.Wait()
+	})
 }

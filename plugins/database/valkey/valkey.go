@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/errwrap"
 	hclog "github.com/hashicorp/go-hclog"
 	"github.com/mediocregopher/radix/v4"
 	"github.com/mediocregopher/radix/v4/resp/resp3"
@@ -72,7 +71,8 @@ func (c *ValkeyDB) NewUser(ctx context.Context, req dbplugin.NewUserRequest) (db
 
 	username, err := credsutil.GenerateUsername(
 		credsutil.DisplayName(req.UsernameConfig.DisplayName, maxKeyLength),
-		credsutil.RoleName(req.UsernameConfig.RoleName, maxKeyLength))
+		credsutil.RoleName(req.UsernameConfig.RoleName, maxKeyLength),
+	)
 	if err != nil {
 		return dbplugin.NewUserResponse{}, fmt.Errorf("failed to generate username: %w", err)
 	}
@@ -138,13 +138,18 @@ func newUser(ctx context.Context, db radix.Client, username string, req dbplugin
 
 	aclargs := []string{"SETUSER", username, "ON", ">" + req.Password}
 
-	var args []string
-	err := json.Unmarshal([]byte(statements[0]), &args)
+	logger := hclog.New(&hclog.LoggerOptions{})
+	var aclRules []string
+
+	// Try to unmarshal the first statement as JSON array
+	// If it fails, assume it's a raw string array of ACL rules
+	err := json.Unmarshal([]byte(statements[0]), &aclRules)
 	if err != nil {
-		return errwrap.Wrapf("error unmarshalling VALKEY rules in the creation statement JSON: {{err}}", err)
+		logger.Warn("Failed to unmarshal creation statements as JSON; applying as a raw string array.", "error", err)
+		aclRules = statements
 	}
 
-	aclargs = append(aclargs, args...)
+	aclargs = append(aclargs, aclRules...)
 	var response string
 
 	err = db.Do(ctx, radix.Cmd(&response, "ACL", aclargs...))
@@ -185,7 +190,7 @@ func (c *ValkeyDB) changeUserPassword(ctx context.Context, username, password st
 	}
 
 	if mn.Null {
-		return fmt.Errorf("changeUserPassword for user %s failed, user not found!", username)
+		return fmt.Errorf("changeUserPassword for user %s failed: user not found", username)
 	}
 
 	var sresponse string

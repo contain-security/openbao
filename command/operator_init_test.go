@@ -7,7 +7,6 @@ package command
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -105,8 +104,6 @@ func TestOperatorInitCommand_Run(t *testing.T) {
 		t.Parallel()
 
 		for _, tc := range cases {
-			tc := tc
-
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 
@@ -287,11 +284,10 @@ func TestOperatorInitCommand_Run(t *testing.T) {
 	t.Run("pgp", func(t *testing.T) {
 		t.Parallel()
 
-		tempDir, pubFiles, err := getPubKeyFiles(t)
+		pubFiles, err := getPubKeyFiles(t)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer os.RemoveAll(tempDir)
 
 		client, closer := testVaultServerUninit(t)
 		defer closer()

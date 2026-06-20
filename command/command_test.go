@@ -22,11 +22,14 @@ import (
 	"github.com/openbao/openbao/builtin/logical/transit"
 	"github.com/openbao/openbao/helper/benchhelpers"
 	"github.com/openbao/openbao/helper/builtinplugins"
+	"github.com/openbao/openbao/helper/configutil"
 	"github.com/openbao/openbao/sdk/v2/helper/logging"
+	"github.com/openbao/openbao/sdk/v2/helper/pointerutil"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/openbao/openbao/sdk/v2/physical/inmem"
 	"github.com/openbao/openbao/vault"
 	"github.com/openbao/openbao/vault/seal"
+	"github.com/stretchr/testify/require"
 
 	auditFile "github.com/openbao/openbao/builtin/audit/file"
 	credUserpass "github.com/openbao/openbao/builtin/credential/userpass"
@@ -173,6 +176,11 @@ func testVaultServerUnsealWithKVVersionWithSeal(tb testing.TB, kvVersion string,
 		HandlerFunc: vaulthttp.Handler,
 		NumCores:    1,
 		KVVersion:   kvVersion,
+		DefaultHandlerProperties: vault.HandlerProperties{
+			ListenerConfig: &configutil.Listener{
+				DisableUnauthedGenerateRootEndpoints: pointerutil.BoolPtr(false),
+			},
+		},
 	})
 }
 
@@ -197,6 +205,49 @@ func testVaultServerCoreConfig(tb testing.TB, coreConfig *vault.CoreConfig) (*ap
 	return testVaultServerCoreConfigWithOpts(tb, coreConfig, &vault.TestClusterOptions{
 		HandlerFunc: vaulthttp.Handler,
 		NumCores:    1, // Default is 3, but we don't need that many
+	})
+}
+
+func testVaultServerUnauthedEndpointsEnabledWithAutoseal(tb testing.TB) (*api.Client, []string, func()) {
+	testSeal, _ := seal.NewTestSeal(nil)
+	autoSeal, err := vault.NewAutoSeal(testSeal)
+	if err != nil {
+		tb.Fatal("unable to create autoseal", err)
+	}
+
+	return testVaultServerCoreConfigWithOpts(tb, &vault.CoreConfig{
+		DisableCache:       true,
+		Seal:               autoSeal,
+		CredentialBackends: defaultVaultCredentialBackends,
+		AuditBackends:      defaultVaultAuditBackends,
+		LogicalBackends:    defaultVaultLogicalBackends,
+	}, &vault.TestClusterOptions{
+		HandlerFunc: vaulthttp.Handler,
+		DefaultHandlerProperties: vault.HandlerProperties{
+			ListenerConfig: &configutil.Listener{
+				DisableUnauthedRekeyEndpoints:        pointerutil.BoolPtr(false),
+				DisableUnauthedGenerateRootEndpoints: pointerutil.BoolPtr(false),
+			},
+		},
+		NumCores: 1,
+	})
+}
+
+func testVaultServerUnauthedEndpointsEnabled(tb testing.TB) (*api.Client, []string, func()) {
+	return testVaultServerCoreConfigWithOpts(tb, &vault.CoreConfig{
+		DisableCache:       true,
+		CredentialBackends: defaultVaultCredentialBackends,
+		AuditBackends:      defaultVaultAuditBackends,
+		LogicalBackends:    defaultVaultLogicalBackends,
+	}, &vault.TestClusterOptions{
+		HandlerFunc: vaulthttp.Handler,
+		DefaultHandlerProperties: vault.HandlerProperties{
+			ListenerConfig: &configutil.Listener{
+				DisableUnauthedRekeyEndpoints:        pointerutil.BoolPtr(false),
+				DisableUnauthedGenerateRootEndpoints: pointerutil.BoolPtr(false),
+			},
+		},
+		NumCores: 1,
 	})
 }
 
@@ -311,7 +362,7 @@ func testVaultServerBad(tb testing.TB) (*api.Client, func()) {
 	}
 
 	return client, func() {
-		ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, done := context.WithTimeout(tb.Context(), 5*time.Second)
 		defer done()
 
 		server.Shutdown(ctx)
@@ -336,15 +387,43 @@ func testTokenAndAccessor(tb testing.TB, client *api.Client) (string, string) {
 	return secret.Auth.ClientToken, secret.Auth.Accessor
 }
 
-func testClient(tb testing.TB, addr string, token string) *api.Client {
+// testVaultServerWithNamespace creates a test vault cluster (with an existing namespace
+// sealed or unsealed depending on the sealed flag provided to the function) and returns
+// a configured API client (with namespace header set), unseal keyshares and closer function.
+func testVaultServerWithNamespace(tb testing.TB, name string, sealed bool) (*api.Client, []string, func()) {
 	tb.Helper()
-	config := api.DefaultConfig()
-	config.Address = addr
-	client, err := api.NewClient(config)
-	if err != nil {
-		tb.Fatal(err)
-	}
-	client.SetToken(token)
 
-	return client
+	client, _, closer := testVaultServerUnseal(tb)
+	data := map[string]any{
+		"seal": `
+seal "shamir" {
+	shares = 3
+	threshold = 2
+}
+`,
+	}
+	resp, err := client.Logical().Write("/sys/namespaces/"+name, data)
+	require.NoError(tb, err)
+	keys, ok := resp.Data["key_shares"].([]any)
+	require.True(tb, ok)
+	keyShares := make([]string, 0, len(keys))
+	for _, share := range keys {
+		keyShares = append(keyShares, share.(string))
+	}
+	if sealed {
+		return client, keyShares, closer
+	}
+
+	for _, keyShare := range keyShares {
+		status, err := client.Sys().UnsealNamespace(&api.UnsealNamespaceInput{
+			Path: name,
+			Key:  keyShare,
+		})
+		require.NoError(tb, err)
+		if !status.Sealed {
+			break
+		}
+	}
+
+	return client, keyShares, closer
 }

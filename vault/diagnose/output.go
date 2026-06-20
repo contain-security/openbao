@@ -5,7 +5,6 @@ package diagnose
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -34,8 +33,6 @@ const (
 	SkippedStatus  = -1
 )
 
-var errUnimplemented = errors.New("unimplemented")
-
 type status int
 
 func (s status) String() string {
@@ -51,7 +48,7 @@ func (s status) String() string {
 }
 
 func (s status) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprint("\"", s.String(), "\"")), nil
+	return fmt.Append(nil, "\"", s.String(), "\""), nil
 }
 
 type Result struct {
@@ -96,7 +93,6 @@ func (r *Result) ZeroTimes() {
 type TelemetryCollector struct {
 	ui         io.Writer
 	spans      map[trace.SpanID]sdktrace.ReadOnlySpan
-	rootSpan   sdktrace.ReadOnlySpan
 	results    map[trace.SpanID]*Result
 	RootResult *Result
 	mu         sync.Mutex
@@ -315,7 +311,7 @@ const (
 )
 
 func indent(sb *strings.Builder, depth int) {
-	for i := 0; i < depth; i++ {
+	for range depth {
 		sb.WriteString(indentString)
 	}
 }

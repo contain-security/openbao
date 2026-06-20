@@ -68,7 +68,7 @@ func (b *BoolPtr) Get() bool {
 func (b *BoolPtr) String() string {
 	var current bool
 	if b.v != nil {
-		current = *(b.v)
+		current = *b.v
 	}
 	return fmt.Sprintf("%v", current)
 }
@@ -255,7 +255,7 @@ func (i *intValue) Set(s string) error {
 		*i.target = v
 		return nil
 	}
-	return fmt.Errorf("Incorrect conversion of a 64-bit integer to a lower bit size. Value %d is not within bounds for int32", v)
+	return fmt.Errorf("incorrect conversion of a 64-bit integer to a lower bit size. Value %d is not within bounds for int32", v)
 }
 
 func (i *intValue) Get() interface{} { return *i.target }
@@ -386,7 +386,7 @@ func (i *uintValue) Set(s string) error {
 		return nil
 	}
 
-	return fmt.Errorf("Incorrect conversion of a 64-bit integer to a lower bit size. Value %d is not within bounds for uint32", v)
+	return fmt.Errorf("incorrect conversion of a 64-bit integer to a lower bit size; value %d is not within bounds for uint32", v)
 }
 
 func (i *uintValue) Get() interface{} { return uint(*i.target) }
@@ -647,15 +647,6 @@ func (d *durationValue) String() string   { return (*d.target).String() }
 func (d *durationValue) Example() string  { return "duration" }
 func (d *durationValue) Hidden() bool     { return d.hidden }
 
-// appendDurationSuffix is used as a backwards-compat tool for assuming users
-// meant "seconds" when they do not provide a suffixed duration value.
-func appendDurationSuffix(s string) string {
-	if strings.HasSuffix(s, "s") || strings.HasSuffix(s, "m") || strings.HasSuffix(s, "h") {
-		return s
-	}
-	return s + "s"
-}
-
 // -- StringSliceVar and stringSliceValue
 type StringSliceVar struct {
 	Name       string
@@ -758,8 +749,8 @@ func newStringMapValue(def map[string]string, target *map[string]string, hidden 
 }
 
 func (s *stringMapValue) Set(val string) error {
-	idx := strings.Index(val, "=")
-	if idx == -1 {
+	before, after, ok := strings.Cut(val, "=")
+	if !ok {
 		return fmt.Errorf("missing = in KV pair: %q", val)
 	}
 
@@ -767,7 +758,7 @@ func (s *stringMapValue) Set(val string) error {
 		*s.target = make(map[string]string)
 	}
 
-	k, v := val[0:idx], val[idx+1:]
+	k, v := before, after
 	(*s.target)[k] = v
 	return nil
 }
@@ -934,7 +925,7 @@ func parseTimeAlternatives(input string, allowedFormats TimeFormat) (time.Time, 
 		}
 	}
 
-	return time.Time{}, errors.New("Could not parse as absolute time.")
+	return time.Time{}, errors.New("Could not parse as absolute time.") //nolint:staticcheck // user-facing error
 }
 
 func (f *FlagSet) TimeVar(i *TimeVar) {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/hashicorp/go-secure-stdlib/strutil"
@@ -30,10 +31,8 @@ func (l *librarySet) Validate() error {
 	if len(l.ServiceAccountNames) < 1 {
 		return errors.New("at least one service account must be configured")
 	}
-	for _, name := range l.ServiceAccountNames {
-		if name == "" {
-			return errors.New("service account name must not be empty")
-		}
+	if slices.Contains(l.ServiceAccountNames, "") {
+		return errors.New("service account name must not be empty")
 	}
 	if l.MaxTTL > 0 {
 		if l.MaxTTL < l.TTL {
@@ -181,7 +180,7 @@ func (b *backend) operationSetCreate(ctx context.Context, req *logical.Request, 
 	disableCheckInEnforcement := fieldData.Get("disable_check_in_enforcement").(bool)
 
 	if len(serviceAccountNames) == 0 {
-		return logical.ErrorResponse(`"service_account_names" must be provided`), nil
+		return logical.ErrorResponse("'service_account_names' must be provided"), nil
 	}
 
 	b.managedUserLock.Lock()
@@ -266,7 +265,7 @@ func (b *backend) operationSetUpdate(ctx context.Context, req *logical.Request, 
 		return nil, err
 	}
 	if set == nil {
-		return logical.ErrorResponse(fmt.Sprintf(`%q doesn't exist`, setName)), nil
+		return logical.ErrorResponse(`%q doesn't exist`, setName), nil
 	}
 
 	b.managedUserLock.Lock()
@@ -296,7 +295,7 @@ func (b *backend) operationSetUpdate(ctx context.Context, req *logical.Request, 
 				return nil, err
 			}
 			if !checkOut.IsAvailable {
-				return logical.ErrorResponse(fmt.Sprintf(`"%s" can't be deleted because it is currently checked out'`, prevServiceAccountName)), nil
+				return logical.ErrorResponse(`"%s" can't be deleted because it is currently checked out'`, prevServiceAccountName), nil
 			}
 		}
 		set.ServiceAccountNames = newServiceAccountNames
@@ -394,7 +393,7 @@ func (b *backend) operationSetDelete(ctx context.Context, req *logical.Request, 
 			return nil, err
 		}
 		if !checkOut.IsAvailable {
-			return logical.ErrorResponse(fmt.Sprintf(`"%s" can't be deleted because it is currently checked out'`, serviceAccountName)), nil
+			return logical.ErrorResponse(`"%s" can't be deleted because it is currently checked out'`, serviceAccountName), nil
 		}
 	}
 	for _, serviceAccountName := range set.ServiceAccountNames {

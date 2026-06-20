@@ -81,19 +81,19 @@ func TestSudoPaths(t *testing.T) {
 			t.Fatalf(
 				"A path in the OpenAPI spec is missing from the static list of "+
 					"sudo paths in the api module (%s). Please reconcile the two "+
-					"accordingly.", path)
+					"accordingly.", path,
+			)
 		}
 	}
 }
 
 func getSudoPathsFromSpec(client *api.Client) (map[string]struct{}, error) {
-	r := client.NewRequest("GET", "/v1/sys/internal/specs/openapi")
-	resp, err := client.RawRequest(r)
+	resp, err := client.Logical().ReadRaw("sys/internal/specs/openapi")
 	if err != nil {
 		return nil, fmt.Errorf("unable to retrieve sudo endpoints: %v", err)
 	}
 	if resp != nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 
 	oasInfo := make(map[string]interface{})

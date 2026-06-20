@@ -41,7 +41,7 @@ func TestDynamicCredsRead_failures(t *testing.T) {
 		data := dynamicRoleFieldData(map[string]interface{}{
 			"name": roleName,
 		})
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		resp, err := b.pathDynamicCredsRead(ctx, req, data)
@@ -81,7 +81,7 @@ func TestDynamicCredsRead_failures(t *testing.T) {
 		data := dynamicRoleFieldData(map[string]interface{}{
 			"name": roleName,
 		})
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		resp, err := b.pathDynamicCredsRead(ctx, req, data)
@@ -121,7 +121,7 @@ func TestDynamicCredsRead_failures(t *testing.T) {
 		data := dynamicRoleFieldData(map[string]interface{}{
 			"name": roleName,
 		})
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		resp, err := b.pathDynamicCredsRead(ctx, req, data)
@@ -159,6 +159,7 @@ func TestDynamicCredsRead_failures(t *testing.T) {
 			Once()
 
 		b := Backend(client)
+		require.NoError(t, b.Setup(t.Context(), logical.TestBackendConfig()))
 
 		req := &logical.Request{
 			Storage:     storage,
@@ -167,7 +168,7 @@ func TestDynamicCredsRead_failures(t *testing.T) {
 		data := dynamicRoleFieldData(map[string]interface{}{
 			"name": roleName,
 		})
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		resp, err := b.pathDynamicCredsRead(ctx, req, data)
@@ -198,7 +199,7 @@ func TestDynamicCredsRead_missing_role(t *testing.T) {
 	data := dynamicRoleFieldData(map[string]interface{}{
 		"name": roleName,
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer cancel()
 
 	resp, err := b.pathDynamicCredsRead(ctx, req, data)
@@ -340,7 +341,8 @@ func TestDynamicCredsRead_success(t *testing.T) {
 			defer storage.AssertExpectations(t)
 
 			b := Backend(client)
-			b.Setup(context.Background(), backendConfig)
+			err := b.Setup(t.Context(), backendConfig)
+			require.NoError(t, err)
 
 			req := &logical.Request{
 				Storage:     storage,
@@ -349,7 +351,7 @@ func TestDynamicCredsRead_success(t *testing.T) {
 			data := dynamicRoleFieldData(map[string]interface{}{
 				"name": roleName,
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 			defer cancel()
 
 			resp, err := b.pathDynamicCredsRead(ctx, req, data)
@@ -482,7 +484,7 @@ func TestSecretCredsRenew(t *testing.T) {
 			data := dynamicRoleFieldData(map[string]interface{}{
 				"name": roleName,
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 			defer cancel()
 
 			resp, err := b.secretCredsRenew()(ctx, test.req, data)
@@ -522,7 +524,7 @@ func TestSecretCredsRevoke(t *testing.T) {
 			},
 		}
 		var data *framework.FieldData
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		_, err := b.secretCredsRevoke()(ctx, req, data)
@@ -551,7 +553,7 @@ func TestSecretCredsRevoke(t *testing.T) {
 			},
 		}
 		var data *framework.FieldData
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		_, err := b.secretCredsRevoke()(ctx, req, data)
@@ -582,7 +584,7 @@ func TestSecretCredsRevoke(t *testing.T) {
 			},
 		}
 		var data *framework.FieldData
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		_, err := b.secretCredsRevoke()(ctx, req, data)
@@ -615,7 +617,7 @@ func TestSecretCredsRevoke(t *testing.T) {
 			},
 		}
 		var data *framework.FieldData
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		_, err := b.secretCredsRevoke()(ctx, req, data)
@@ -664,7 +666,7 @@ func TestSecretCredsRevoke(t *testing.T) {
 			},
 		}
 		var data *framework.FieldData
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		_, err := b.secretCredsRevoke()(ctx, req, data)
@@ -713,7 +715,7 @@ func TestSecretCredsRevoke(t *testing.T) {
 			},
 		}
 		var data *framework.FieldData
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
 		_, err := b.secretCredsRevoke()(ctx, req, data)

@@ -59,13 +59,16 @@ type PluginRunner struct {
 	Sha256         []byte                      `json:"sha256" structs:"sha256"`
 	Builtin        bool                        `json:"builtin" structs:"builtin"`
 	BuiltinFactory func() (interface{}, error) `json:"-" structs:"-"`
+	Oci            bool                        `json:"oci" structs:"oci"`
+	Declarative    bool                        `json:"declarative" structs:"declarative"`
 }
 
 // Run takes a wrapper RunnerUtil instance along with the go-plugin parameters and
 // returns a configured plugin.Client with TLS Configured and a wrapping token set
 // on PluginUnwrapTokenEnv for plugin process consumption.
 func (r *PluginRunner) Run(ctx context.Context, wrapper RunnerUtil, pluginSets map[int]plugin.PluginSet, hs plugin.HandshakeConfig, env []string, logger log.Logger) (*plugin.Client, error) {
-	return r.RunConfig(ctx,
+	return r.RunConfig(
+		ctx,
 		Runner(wrapper),
 		PluginSets(pluginSets),
 		HandshakeConfig(hs),
@@ -79,7 +82,8 @@ func (r *PluginRunner) Run(ctx context.Context, wrapper RunnerUtil, pluginSets m
 // in metadata mode. The PluginMetadataModeEnv is passed in as part of the Cmd to
 // plugin.Client, and consumed by the plugin process on api.VaultPluginTLSProvider.
 func (r *PluginRunner) RunMetadataMode(ctx context.Context, wrapper RunnerUtil, pluginSets map[int]plugin.PluginSet, hs plugin.HandshakeConfig, env []string, logger log.Logger) (*plugin.Client, error) {
-	return r.RunConfig(ctx,
+	return r.RunConfig(
+		ctx,
 		Runner(wrapper),
 		PluginSets(pluginSets),
 		HandshakeConfig(hs),
@@ -98,6 +102,8 @@ type VersionedPlugin struct {
 	SHA256            string `json:"sha256,omitempty"`
 	Builtin           bool   `json:"builtin"`
 	DeprecationStatus string `json:"deprecation_status,omitempty"`
+	Oci               bool   `json:"oci" structs:"oci"`
+	Declarative       bool   `json:"declarative" structs:"declarative"`
 
 	// Pre-parsed semver struct of the Version field
 	SemanticVersion *version.Version `json:"-"`

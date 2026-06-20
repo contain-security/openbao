@@ -42,7 +42,8 @@ func fakeVaultServer(t *testing.T) *httptest.Server {
 
 		firstRequest = false
 
-		fmt.Fprintf(w, `{
+		fmt.Fprintf(
+			w, `{
                 "request_id": "8af096e9-518c-7351-eff5-5ba20554b21f",
                 "lease_id": "",
                 "renewable": false,
@@ -245,7 +246,7 @@ func TestExecServer_Run(t *testing.T) {
 			fakeVault := fakeVaultServer(t)
 			defer fakeVault.Close()
 
-			ctx, cancelContextFunc := context.WithTimeout(context.Background(), testCase.expectedTestDuration)
+			ctx, cancelContextFunc := context.WithTimeout(t.Context(), testCase.expectedTestDuration)
 			defer cancelContextFunc()
 
 			testAppCommand := []string{
@@ -354,7 +355,7 @@ func TestExecServer_Run(t *testing.T) {
 			if err != nil {
 				t.Fatalf("error making request to the test app: %s", err)
 			}
-			defer resp.Body.Close()
+			defer resp.Body.Close() //nolint:errcheck
 
 			decoder := json.NewDecoder(resp.Body)
 			var response struct {

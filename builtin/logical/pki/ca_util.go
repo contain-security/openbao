@@ -29,21 +29,23 @@ func getGenerationParams(sc *storageContext, data *framework.FieldData) (exporte
 	case "kms":
 	default:
 		errorResp = logical.ErrorResponse(
-			`the "exported" path parameter must be "internal", "existing", exported" or "kms"`)
-		return
+			`the "exported" path parameter must be "internal", "existing", exported" or "kms"`,
+		)
+		return exported, format, role, errorResp
 	}
 
 	format = getFormat(data)
 	if format == "" {
 		errorResp = logical.ErrorResponse(
-			`the "format" path parameter must be "pem", "der", or "pem_bundle"`)
-		return
+			`the "format" path parameter must be "pem", "der", or "pem_bundle"`,
+		)
+		return exported, format, role, errorResp
 	}
 
 	keyType, keyBits, err := sc.getKeyTypeAndBitsForRole(data)
 	if err != nil {
 		errorResp = logical.ErrorResponse(err.Error())
-		return
+		return exported, format, role, errorResp
 	}
 
 	role = &roleEntry{
@@ -77,7 +79,7 @@ func getGenerationParams(sc *storageContext, data *framework.FieldData) (exporte
 		errorResp = logical.ErrorResponse(err.Error())
 	}
 
-	return
+	return exported, format, role, errorResp
 }
 
 func generateCABundle(sc *storageContext, input *inputBundle, data *certutil.CreationBundle, randomSource io.Reader) (*certutil.ParsedCertBundle, error) {

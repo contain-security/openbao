@@ -67,7 +67,7 @@ enabled while creating or updating a role.
 
 ### Parameters
 
-- `role_name` `(string: <required>)` - Name of the AppRole. Must be less than 4096 bytes, accepted characters 
+- `role_name` `(string: <required>)` - Name of the AppRole. Must be less than 4096 bytes, accepted characters
 include a-Z, 0-9, space, hyphen, underscore and periods.
 - `bind_secret_id` `(bool: true)` - Require `secret_id` to be presented when
   logging in using this AppRole.
@@ -694,7 +694,7 @@ parameters of the AppRole can be updated using the `/auth/approle/role/:role_nam
 endpoint directly. The endpoints for each field is provided separately
 to be able to delegate specific endpoints using OpenBao's ACL system.
 
-| Method            | Path                                                  |
+| Method            | Path                                                  | Code      |
 | :---------------- | :---------------------------------------------------- | --------- |
 | `GET/POST/DELETE` | `/auth/approle/role/:role_name/policies`              | `200/204` |
 | `GET/POST/DELETE` | `/auth/approle/role/:role_name/secret-id-num-uses`    | `200/204` |

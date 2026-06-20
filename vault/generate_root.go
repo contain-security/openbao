@@ -11,15 +11,25 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/go-uuid"
+	"github.com/openbao/openbao/helper/namespace"
 	"github.com/openbao/openbao/helper/pgpkeys"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/helper/roottoken"
 	"github.com/openbao/openbao/sdk/v2/helper/shamir"
 )
 
-// GenerateStandardRootTokenStrategy is the strategy used to generate a
-// typical root token
+type rootTokenGeneration struct {
+	Config   *GenerateRootConfig
+	Progress [][]byte
+}
+
+// GenerateStandardRootTokenStrategy is the strategy used to
+// generate a typical root token.
 var GenerateStandardRootTokenStrategy GenerateRootStrategy = generateStandardRootToken{}
+
+// ErrNoRootGeneration is returned when no root token generation
+// is currently in progress.
+var ErrNoRootGeneration = errors.New("no root generation in progress")
 
 // GenerateRootStrategy allows us to swap out the strategy we want to use to
 // create a token upon completion of the generate root process.
@@ -33,15 +43,12 @@ type GenerateRootStrategy interface {
 type generateStandardRootToken struct{}
 
 func (g generateStandardRootToken) authenticate(ctx context.Context, c *Core, combinedKey []byte) error {
-	rootKey, err := c.unsealKeyToRootKeyPostUnseal(ctx, combinedKey)
+	ns, err := namespace.FromContext(ctx)
 	if err != nil {
-		return fmt.Errorf("unable to authenticate: %w", err)
-	}
-	if err := c.barrier.VerifyRoot(rootKey); err != nil {
-		return fmt.Errorf("root key verification failed: %w", err)
+		return err
 	}
 
-	return nil
+	return c.sealManager.AuthenticateRootKey(ctx, ns, combinedKey)
 }
 
 func (g generateStandardRootToken) generate(ctx context.Context, c *Core) (string, func(), error) {
@@ -62,8 +69,7 @@ func (g generateStandardRootToken) generate(ctx context.Context, c *Core) (strin
 	return te.ExternalID, cleanupFunc, nil
 }
 
-// GenerateRootConfig holds the configuration for a root generation
-// command.
+// GenerateRootConfig holds the configuration for a root token generation.
 type GenerateRootConfig struct {
 	Nonce          string
 	PGPKey         string
@@ -72,8 +78,7 @@ type GenerateRootConfig struct {
 	Strategy       GenerateRootStrategy
 }
 
-// GenerateRootResult holds the result of a root generation update
-// command
+// GenerateRootResult holds the result of a root token generation update.
 type GenerateRootResult struct {
 	Progress       int
 	Required       int
@@ -81,57 +86,123 @@ type GenerateRootResult struct {
 	PGPFingerprint string
 }
 
-// GenerateRootProgress is used to return the root generation progress (num shares)
-func (c *Core) GenerateRootProgress() (int, error) {
+// lockRootGeneration is used to lock the stateLock of the Core,
+// check the seal, standby and recoveryMode statuses, and return
+// back an unlock func.
+func (c *Core) lockRootGeneration() (func(), error) {
 	c.stateLock.RLock()
-	defer c.stateLock.RUnlock()
+
 	if c.Sealed() && !c.recoveryMode {
-		return 0, consts.ErrSealed
-	}
-	if c.standby && !c.recoveryMode {
-		return 0, consts.ErrStandby
-	}
-
-	c.generateRootLock.Lock()
-	defer c.generateRootLock.Unlock()
-
-	return len(c.generateRootProgress), nil
-}
-
-// GenerateRootConfiguration is used to read the root generation configuration
-// It stubbornly refuses to return the OTP if one is there.
-func (c *Core) GenerateRootConfiguration() (*GenerateRootConfig, error) {
-	c.stateLock.RLock()
-	defer c.stateLock.RUnlock()
-	if c.Sealed() && !c.recoveryMode {
+		c.stateLock.RUnlock()
 		return nil, consts.ErrSealed
 	}
-	if c.standby && !c.recoveryMode {
+	if c.standby.Load() && !c.recoveryMode {
+		c.stateLock.RUnlock()
 		return nil, consts.ErrStandby
 	}
-
-	c.generateRootLock.Lock()
-	defer c.generateRootLock.Unlock()
-
-	// Copy the config if any
-	var conf *GenerateRootConfig
-	if c.generateRootConfig != nil {
-		conf = new(GenerateRootConfig)
-		*conf = *c.generateRootConfig
-		conf.OTP = ""
-		conf.Strategy = nil
+	if !c.barrier.Sealed() && c.recoveryMode {
+		c.stateLock.RUnlock()
+		return nil, errors.New("attempted to generate recovery operation token when already unsealed")
 	}
-	return conf, nil
+
+	return c.stateLock.RUnlock, nil
 }
 
-// GenerateRootInit is used to initialize the root generation settings
-func (c *Core) GenerateRootInit(otp, pgpKey string, strategy GenerateRootStrategy) error {
+// GenerateRootProgress is used to return the root token generation progress.
+func (c *Core) GenerateRootProgress(ctx context.Context) (int, error) {
+	unlock, err := c.lockRootGeneration()
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+
+	return c.lockedGenerateRootProgress(ctx)
+}
+
+func (c *Core) lockedGenerateRootProgress(ctx context.Context) (int, error) {
+	ns, err := namespace.FromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	c.namespaceRootGenLock.RLock()
+	defer c.namespaceRootGenLock.RUnlock()
+
+	if c.namespaceRootGens[ns.UUID] == nil {
+		return 0, nil
+	}
+
+	return len(c.namespaceRootGens[ns.UUID].Progress), nil
+}
+
+// GenerateRootConfiguration is used to read the root generation configuration.
+// It stubbornly refuses to return the OTP if one is there.
+func (c *Core) GenerateRootConfiguration(ctx context.Context) (*GenerateRootConfig, error) {
+	unlock, err := c.lockRootGeneration()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	return c.lockedGenerateRootConfiguration(ctx)
+}
+
+func (c *Core) lockedGenerateRootConfiguration(ctx context.Context) (*GenerateRootConfig, error) {
+	ns, err := namespace.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	c.namespaceRootGenLock.RLock()
+	defer c.namespaceRootGenLock.RUnlock()
+
+	namespaceRootGen, exists := c.namespaceRootGens[ns.UUID]
+	if !exists {
+		return nil, ErrNoRootGeneration
+	}
+
+	config := *namespaceRootGen.Config
+	config.OTP = ""
+	config.Strategy = nil
+
+	return &config, nil
+}
+
+// GenerateRootInit is used to initialize the root generation attempt.
+func (c *Core) GenerateRootInit(ctx context.Context, otp, pgpKey string, strategy GenerateRootStrategy) error {
+	unlock, err := c.lockRootGeneration()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	return c.lockedGenerateRootInit(ctx, otp, pgpKey, strategy)
+}
+
+func (c *Core) lockedGenerateRootInit(ctx context.Context, otp, pgpKey string, strategy GenerateRootStrategy) error {
+	ns, err := namespace.FromContext(ctx)
+	if err != nil {
+		return err
+	}
+
 	var fingerprint string
 	switch {
 	case len(otp) > 0:
-		if (len(otp) != TokenLength+TokenPrefixLength && !c.DisableSSCTokens()) ||
-			(len(otp) != TokenLength+OldTokenPrefixLength && c.DisableSSCTokens()) {
-			return errors.New("OTP string is wrong length")
+		var expectedLength int
+		if ns.UUID == namespace.RootNamespaceUUID {
+			expectedLength = TokenLength
+		} else {
+			expectedLength = NSTokenLength
+		}
+
+		if c.DisableSSCTokens() {
+			expectedLength += OldTokenPrefixLength
+		} else {
+			expectedLength += TokenPrefixLength
+		}
+
+		if len(otp) != expectedLength {
+			return errors.New("OTP string has incorrect length")
 		}
 
 	case len(pgpKey) > 0:
@@ -148,62 +219,69 @@ func (c *Core) GenerateRootInit(otp, pgpKey string, strategy GenerateRootStrateg
 		return errors.New("otp or pgp_key parameter must be provided")
 	}
 
-	c.stateLock.RLock()
-	defer c.stateLock.RUnlock()
-	if c.Sealed() && !c.recoveryMode {
-		return consts.ErrSealed
-	}
-	barrierSealed, err := c.barrier.Sealed()
-	if err != nil {
-		return errors.New("unable to check barrier seal status")
-	}
-	if !barrierSealed && c.recoveryMode {
-		return errors.New("attempt to generate recovery operation token when already unsealed")
-	}
-	if c.standby && !c.recoveryMode {
-		return consts.ErrStandby
+	c.namespaceRootGenLock.Lock()
+	defer c.namespaceRootGenLock.Unlock()
+
+	gen, exists := c.namespaceRootGens[ns.UUID]
+	if !exists {
+		gen = &rootTokenGeneration{}
+		c.namespaceRootGens[ns.UUID] = gen
 	}
 
-	c.generateRootLock.Lock()
-	defer c.generateRootLock.Unlock()
-
-	// Prevent multiple concurrent root generations
-	if c.generateRootConfig != nil {
-		return errors.New("root generation already in progress")
+	// Prevent multiple concurrent root generations per namespace.
+	if gen.Config != nil {
+		return errors.New("root generation already in progress for this namespace")
 	}
 
-	// Copy the configuration
-	generationNonce, err := uuid.GenerateUUID()
+	nonce, err := uuid.GenerateUUID()
 	if err != nil {
 		return err
 	}
 
-	c.generateRootConfig = &GenerateRootConfig{
-		Nonce:          generationNonce,
+	gen.Config = &GenerateRootConfig{
+		Nonce:          nonce,
 		OTP:            otp,
 		PGPKey:         pgpKey,
 		PGPFingerprint: fingerprint,
 		Strategy:       strategy,
 	}
 
-	if c.logger.IsInfo() {
-		switch strategy.(type) {
-		case generateStandardRootToken:
-			c.logger.Info("root generation initialized", "nonce", c.generateRootConfig.Nonce)
-		case *generateRecoveryToken:
-			c.logger.Info("recovery operation token generation initialized", "nonce", c.generateRootConfig.Nonce)
-		default:
-			c.logger.Info("dr operation token generation initialized", "nonce", c.generateRootConfig.Nonce)
-		}
+	switch strategy.(type) {
+	case generateStandardRootToken:
+		c.logger.Info("root generation initialized", "nonce", gen.Config.Nonce)
+	case *generateRecoveryToken:
+		c.logger.Info("recovery operation token generation initialized", "nonce", gen.Config.Nonce)
+	default:
+		c.logger.Info("dr operation token generation initialized", "nonce", gen.Config.Nonce)
 	}
 
 	return nil
 }
 
-// GenerateRootUpdate is used to provide a new key part
+// GenerateRootUpdate is used to provide a new key part to progress root generation.
 func (c *Core) GenerateRootUpdate(ctx context.Context, key []byte, nonce string, strategy GenerateRootStrategy) (*GenerateRootResult, error) {
+	unlock, err := c.lockRootGeneration()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	return c.lockedGenerateRootUpdate(ctx, key, nonce, strategy)
+}
+
+func (c *Core) lockedGenerateRootUpdate(ctx context.Context, key []byte, nonce string, strategy GenerateRootStrategy) (*GenerateRootResult, error) {
+	ns, err := namespace.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	barrier := c.sealManager.NamespaceBarrier(ns.Path)
+	if barrier == nil {
+		return nil, ErrNotSealable
+	}
+
 	// Verify the key length
-	min, max := c.barrier.KeyLength()
+	min, max := barrier.KeyLength()
 	max += shamir.ShareOverhead
 	if len(key) < min {
 		return nil, &ErrInvalidKey{fmt.Sprintf("key is shorter than minimum %d bytes", min)}
@@ -212,19 +290,21 @@ func (c *Core) GenerateRootUpdate(ctx context.Context, key []byte, nonce string,
 		return nil, &ErrInvalidKey{fmt.Sprintf("key is longer than maximum %d bytes", max)}
 	}
 
+	seal := c.sealManager.NamespaceSeal(ns.UUID)
+	if seal == nil {
+		return nil, ErrNotSealable
+	}
+
 	// Get the seal configuration
 	var config *SealConfig
-	var err error
-	if c.seal.RecoveryKeySupported() {
-		config, err = c.seal.RecoveryConfig(ctx)
-		if err != nil {
-			return nil, err
-		}
+	if seal.RecoveryKeySupported() {
+		config, err = seal.RecoveryConfig(ctx)
 	} else {
-		config, err = c.seal.BarrierConfig(ctx)
-		if err != nil {
-			return nil, err
-		}
+		config, err = seal.BarrierConfig(ctx)
+	}
+
+	if err != nil {
+		return nil, err
 	}
 
 	// Ensure the barrier is initialized
@@ -232,72 +312,51 @@ func (c *Core) GenerateRootUpdate(ctx context.Context, key []byte, nonce string,
 		return nil, ErrNotInit
 	}
 
-	// Ensure we are already unsealed
-	c.stateLock.RLock()
-	defer c.stateLock.RUnlock()
-	if c.Sealed() && !c.recoveryMode {
-		return nil, consts.ErrSealed
+	c.namespaceRootGenLock.Lock()
+	defer c.namespaceRootGenLock.Unlock()
+
+	gen, exists := c.namespaceRootGens[ns.UUID]
+	if !exists {
+		return nil, ErrNoRootGeneration
 	}
 
-	barrierSealed, err := c.barrier.Sealed()
-	if err != nil {
-		return nil, errors.New("unable to check barrier seal status")
-	}
-	if !barrierSealed && c.recoveryMode {
-		return nil, errors.New("attempt to generate recovery operation token when already unsealed")
+	if nonce != gen.Config.Nonce {
+		return nil, fmt.Errorf("incorrect nonce supplied; nonce for this root generation operation is %q", gen.Config.Nonce)
 	}
 
-	if c.standby && !c.recoveryMode {
-		return nil, consts.ErrStandby
-	}
-
-	c.generateRootLock.Lock()
-	defer c.generateRootLock.Unlock()
-
-	// Ensure a generateRoot is in progress
-	if c.generateRootConfig == nil {
-		return nil, errors.New("no root generation in progress")
-	}
-
-	if nonce != c.generateRootConfig.Nonce {
-		return nil, fmt.Errorf("incorrect nonce supplied; nonce for this root generation operation is %q", c.generateRootConfig.Nonce)
-	}
-
-	if strategy != c.generateRootConfig.Strategy {
+	if strategy != gen.Config.Strategy {
 		return nil, errors.New("incorrect strategy supplied; a generate root operation of another type is already in progress")
 	}
 
 	// Check if we already have this piece
-	for _, existing := range c.generateRootProgress {
+	for _, existing := range gen.Progress {
 		if bytes.Equal(existing, key) {
 			return nil, errors.New("given key has already been provided during this generation operation")
 		}
 	}
 
 	// Store this key
-	c.generateRootProgress = append(c.generateRootProgress, key)
-	progress := len(c.generateRootProgress)
+	gen.Progress = append(gen.Progress, key)
+	progress := len(gen.Progress)
 
 	// Check if we don't have enough keys to unlock
-	if len(c.generateRootProgress) < config.SecretThreshold {
-		if c.logger.IsDebug() {
-			c.logger.Debug("cannot generate root, not enough keys", "keys", progress, "threshold", config.SecretThreshold)
-		}
+	if progress < config.SecretThreshold {
+		c.logger.Debug("cannot generate root, not enough keys", "keys", progress, "threshold", config.SecretThreshold)
 		return &GenerateRootResult{
 			Progress:       progress,
 			Required:       config.SecretThreshold,
-			PGPFingerprint: c.generateRootConfig.PGPFingerprint,
+			PGPFingerprint: gen.Config.PGPFingerprint,
 		}, nil
 	}
 
 	// Combine the key parts
 	var combinedKey []byte
 	if config.SecretThreshold == 1 {
-		combinedKey = c.generateRootProgress[0]
-		c.generateRootProgress = nil
+		combinedKey = gen.Progress[0]
+		gen.Progress = nil
 	} else {
-		combinedKey, err = shamir.Combine(c.generateRootProgress)
-		c.generateRootProgress = nil
+		combinedKey, err = shamir.Combine(gen.Progress)
+		gen.Progress = nil
 		if err != nil {
 			return nil, fmt.Errorf("failed to compute root key: %w", err)
 		}
@@ -317,11 +376,11 @@ func (c *Core) GenerateRootUpdate(ctx context.Context, key []byte, nonce string,
 	var encodedToken string
 
 	switch {
-	case len(c.generateRootConfig.OTP) > 0:
-		encodedToken, err = roottoken.EncodeToken(token, c.generateRootConfig.OTP)
-	case len(c.generateRootConfig.PGPKey) > 0:
+	case len(gen.Config.OTP) > 0:
+		encodedToken, err = roottoken.EncodeToken(token, gen.Config.OTP)
+	case len(gen.Config.PGPKey) > 0:
 		var tokenBytesArr [][]byte
-		_, tokenBytesArr, err = pgpkeys.EncryptShares([][]byte{[]byte(token)}, []string{c.generateRootConfig.PGPKey})
+		_, tokenBytesArr, err = pgpkeys.EncryptShares([][]byte{[]byte(token)}, []string{gen.Config.PGPKey})
 		encodedToken = base64.StdEncoding.EncodeToString(tokenBytesArr[0])
 	default:
 		err = errors.New("unreachable condition")
@@ -336,39 +395,43 @@ func (c *Core) GenerateRootUpdate(ctx context.Context, key []byte, nonce string,
 		Progress:       progress,
 		Required:       config.SecretThreshold,
 		EncodedToken:   encodedToken,
-		PGPFingerprint: c.generateRootConfig.PGPFingerprint,
+		PGPFingerprint: gen.Config.PGPFingerprint,
 	}
 
 	switch strategy.(type) {
 	case generateStandardRootToken:
-		c.logger.Info("root generation finished", "nonce", c.generateRootConfig.Nonce)
+		c.logger.Info("root generation finished", "nonce", gen.Config.Nonce)
 	case *generateRecoveryToken:
-		c.logger.Info("recovery operation token generation finished", "nonce", c.generateRootConfig.Nonce)
+		c.logger.Info("recovery operation token generation finished", "nonce", gen.Config.Nonce)
 	default:
-		c.logger.Info("dr operation token generation finished", "nonce", c.generateRootConfig.Nonce)
+		c.logger.Info("dr operation token generation finished", "nonce", gen.Config.Nonce)
 	}
 
-	c.generateRootProgress = nil
-	c.generateRootConfig = nil
+	delete(c.namespaceRootGens, ns.UUID)
 	return results, nil
 }
 
 // GenerateRootCancel is used to cancel an in-progress root generation
-func (c *Core) GenerateRootCancel() error {
-	c.stateLock.RLock()
-	defer c.stateLock.RUnlock()
-	if c.Sealed() && !c.recoveryMode {
-		return consts.ErrSealed
+func (c *Core) GenerateRootCancel(ctx context.Context) error {
+	unlock, err := c.lockRootGeneration()
+	if err != nil {
+		return err
 	}
-	if c.standby && !c.recoveryMode {
-		return consts.ErrStandby
+	defer unlock()
+
+	return c.lockedGenerateRootCancel(ctx)
+}
+
+func (c *Core) lockedGenerateRootCancel(ctx context.Context) error {
+	ns, err := namespace.FromContext(ctx)
+	if err != nil {
+		return err
 	}
 
-	c.generateRootLock.Lock()
-	defer c.generateRootLock.Unlock()
+	c.namespaceRootGenLock.Lock()
+	defer c.namespaceRootGenLock.Unlock()
 
 	// Clear any progress or config
-	c.generateRootConfig = nil
-	c.generateRootProgress = nil
+	delete(c.namespaceRootGens, ns.UUID)
 	return nil
 }

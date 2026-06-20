@@ -14,16 +14,15 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/raft"
 	"github.com/openbao/openbao/sdk/v2/plugin/pb"
 	"github.com/rboyer/safeio"
 	bolt "go.etcd.io/bbolt"
-	"go.uber.org/atomic"
 	"google.golang.org/protobuf/proto"
-
-	"github.com/hashicorp/raft"
 )
 
 const (
@@ -381,7 +380,7 @@ func (s *BoltSnapshotSink) writeBoltDBFile() error {
 
 				// Commit in batches of 50k. Bolt holds all the data in memory and
 				// doesn't split the pages until commit so we do incremental writes.
-				for i := 0; i < 50000; i++ {
+				for range 50000 {
 					err := protoReader.ReadMsg(entry)
 					if err != nil {
 						if err == io.EOF {

@@ -17,8 +17,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/cap/jwt"
@@ -47,7 +49,7 @@ func pathConfig(b *jwtAuthBackend) *framework.Path {
 		Fields: map[string]*framework.FieldSchema{
 			"oidc_discovery_url": {
 				Type:        framework.TypeString,
-				Description: `OIDC Discovery URL, without any .well-known component (base path). Cannot be used with "jwks_url" or "jwt_validation_pubkeys".`,
+				Description: `The base URL of the OIDC Discovery URL without ".well-known/openid-configuration" component. Cannot be used with "jwks_url" or "jwt_validation_pubkeys".`,
 			},
 			"oidc_discovery_ca_pem": {
 				Type:        framework.TypeString,
@@ -202,7 +204,7 @@ func contactIssuer(ctx context.Context, uri string, data *url.Values, ignoreBad 
 	if err != nil {
 		return nil, nil
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -241,10 +243,7 @@ func (b *jwtAuthBackend) configDeviceAuthURL(ctx context.Context, s logical.Stor
 		return fmt.Errorf("error creating context for device auth: %w", err)
 	}
 
-	issuer := config.OIDCDiscoveryURL
-
-	wellKnown := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
-	body, err := contactIssuer(caCtx, wellKnown, nil, false)
+	body, err := contactIssuer(caCtx, strings.TrimSuffix(config.OIDCDiscoveryURL, "/")+"/.well-known/openid-configuration", nil, false)
 	if err != nil {
 		return fmt.Errorf("error reading issuer config: %w", err)
 	}
@@ -281,9 +280,7 @@ func (b *jwtAuthBackend) pathConfigRead(ctx context.Context, req *logical.Reques
 	// Omit sensitive keys from provider-specific config
 	providerConfig := make(map[string]interface{})
 	if provider != nil {
-		for k, v := range config.ProviderConfig {
-			providerConfig[k] = v
-		}
+		maps.Copy(providerConfig, config.ProviderConfig)
 
 		for _, k := range provider.SensitiveKeys() {
 			delete(providerConfig, k)
@@ -375,17 +372,24 @@ func (b *jwtAuthBackend) pathConfigWrite(ctx context.Context, req *logical.Reque
 	if config.JWKSURL != "" {
 		methodCount++
 	}
+	if config.hasCustomProviderDiscovery() {
+		methodCount++
+	}
 
 	resp := &logical.Response{}
 	switch {
 	case methodCount != 1:
-		return logical.ErrorResponse("exactly one of 'jwt_validation_pubkeys', 'jwks_url' or 'oidc_discovery_url' must be set"), nil
+		return logical.ErrorResponse("exactly one of 'jwt_validation_pubkeys', 'jwks_url', 'jwks_pairs', 'oidc_discovery_url', or 'provider_config' must be set"), nil
 
 	case config.OIDCClientID != "" && config.OIDCClientSecret == "",
 		config.OIDCClientID == "" && config.OIDCClientSecret != "":
 		return logical.ErrorResponse("both 'oidc_client_id' and 'oidc_client_secret' must be set for OIDC"), nil
 
 	case config.OIDCDiscoveryURL != "":
+		if strings.Contains(config.OIDCDiscoveryURL, ".well-known/openid-configuration") {
+			return logical.ErrorResponse("'oidc_discovery_url' contains '.well-known' component"), nil
+		}
+
 		var err error
 		if config.OIDCClientID != "" && config.OIDCClientSecret != "" {
 			_, err = b.createProvider(config)
@@ -400,7 +404,6 @@ func (b *jwtAuthBackend) pathConfigWrite(ctx context.Context, req *logical.Reque
 
 			resp.AddWarning("error checking oidc discovery URL")
 		}
-
 	case config.OIDCClientID != "" && config.OIDCDiscoveryURL == "":
 		return logical.ErrorResponse("'oidc_discovery_url' must be set for OIDC"), nil
 
@@ -434,7 +437,15 @@ func (b *jwtAuthBackend) pathConfigWrite(ctx context.Context, req *logical.Reque
 				return logical.ErrorResponse(fmt.Errorf("error parsing public key: %w", err).Error()), nil
 			}
 		}
-
+	case config.hasCustomProviderDiscovery():
+		pConfig, initErr := NewProviderConfig(b.providerCtx, config, ProviderMap())
+		if initErr != nil {
+			return nil, initErr
+		}
+		_, err = pConfig.(KeySetDiscovery).NewKeySet(b.providerCtx)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, errors.New("unknown condition")
 	}
@@ -629,6 +640,7 @@ const (
 	JWKS
 	OIDCDiscovery
 	OIDCFlow
+	CustomProviderDiscovery
 	unconfigured
 )
 
@@ -644,6 +656,8 @@ func (c jwtConfig) authType() int {
 			return OIDCFlow
 		}
 		return OIDCDiscovery
+	case c.hasCustomProviderDiscovery():
+		return CustomProviderDiscovery
 	}
 
 	return unconfigured
@@ -656,7 +670,29 @@ func (c jwtConfig) hasType(t string) bool {
 		return true
 	}
 
-	return strutil.StrListContains(c.OIDCResponseTypes, t)
+	return slices.Contains(c.OIDCResponseTypes, t)
+}
+
+// hasCustomProviderDiscovery returns true if the configuration refers to a custom provider
+// that implements KeySetDiscovery interface.
+func (c jwtConfig) hasCustomProviderDiscovery() bool {
+	if len(c.ProviderConfig) == 0 {
+		return false
+	}
+
+	provider, ok := c.ProviderConfig["provider"].(string)
+	if !ok {
+		return false
+	}
+
+	providerMap := ProviderMap()
+	newCustomProvider, ok := providerMap[provider]
+	if !ok {
+		return false
+	}
+
+	_, ok = newCustomProvider.(KeySetDiscovery)
+	return ok
 }
 
 // Adapted from similar code in https://github.com/golang/go/blob/86fca3dcb63157b8e45e565e821e7fb098fcf368/src/crypto/tls/handshake_client.go#L1160-L1181

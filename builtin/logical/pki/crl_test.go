@@ -4,7 +4,6 @@
 package pki
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -50,7 +49,7 @@ func TestBackend_CRLConfigUpdate(t *testing.T) {
 	oldConfig := legacyConfig{Expiry: "24h", Disable: false}
 	entry, err := logical.StorageEntryJSON("config/crl", oldConfig)
 	require.NoError(t, err, "generate storage entry objection with legacy config")
-	err = s.Put(ctx, entry)
+	err = s.Put(t.Context(), entry)
 	require.NoError(t, err, "failed writing legacy config")
 
 	// Now lets read it.
@@ -282,7 +281,7 @@ func crlEnableDisableTestForBackend(t *testing.T, b *backend, s logical.Storage,
 	}
 
 	serials := make(map[int]string)
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		resp, err := CBWrite(b, s, "issue/test", map[string]interface{}{
 			"common_name": "test.foobar.com",
 		})
@@ -378,7 +377,7 @@ func crlEnableDisableTestForBackend(t *testing.T, b *backend, s logical.Storage,
 
 func TestBackend_Secondary_CRL_Rebuilding(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 	b, s := CreateBackendWithStorage(t)
 	sc := b.makeStorageContext(ctx, s)
 
@@ -403,7 +402,7 @@ func TestBackend_Secondary_CRL_Rebuilding(t *testing.T) {
 
 func TestCrlRebuilder(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 	b, s := CreateBackendWithStorage(t)
 	sc := b.makeStorageContext(ctx, s)
 
@@ -815,7 +814,7 @@ func TestIssuerRevocation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Issue a leaf cert and ensure it fails (because the issuer is revoked).
-	resp, err = CBWrite(b, s, "issuer/root2/issue/local-testing", map[string]interface{}{
+	_, err = CBWrite(b, s, "issuer/root2/issue/local-testing", map[string]interface{}{
 		"common_name": "testing",
 	})
 	require.Error(t, err)
@@ -1002,7 +1001,7 @@ func TestAutoRebuild(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	defaultCrlPath := "/v1/pki/crl"
+	defaultCrlPath := "pki/crl"
 	crl := getParsedCrlAtPath(t, client, defaultCrlPath)
 	lastCRLNumber := getCRLNumber(t, crl)
 	lastCRLExpiry := crl.NextUpdate
@@ -1020,7 +1019,7 @@ func TestAutoRebuild(t *testing.T) {
 
 	// Wait for the CRL to update based on the configuration change we just did
 	// so that it doesn't grab the revocation we are going to do afterwards.
-	crl = waitForUpdatedCrl(t, client, defaultCrlPath, lastCRLNumber, lastCRLExpiry.Sub(time.Now()))
+	crl = waitForUpdatedCrl(t, client, defaultCrlPath, lastCRLNumber, time.Until(lastCRLExpiry))
 	lastCRLNumber = getCRLNumber(t, crl)
 	lastCRLExpiry = crl.NextUpdate
 
@@ -1095,11 +1094,7 @@ func TestAutoRebuild(t *testing.T) {
 
 	haveUpdatedDeltaCRL := false
 	interruptChan := time.After(4*newPeriod + delta)
-	for {
-		if haveUpdatedDeltaCRL {
-			break
-		}
-
+	for !haveUpdatedDeltaCRL {
 		select {
 		case <-interruptChan:
 			t.Fatalf("expected to regenerate delta CRL within a couple of periodicFunc invocations (plus %v grace period)", delta)
@@ -1147,7 +1142,7 @@ func TestAutoRebuild(t *testing.T) {
 			haveUpdatedDeltaCRL = true
 
 			// Ensure it has what we want.
-			deltaCrl := getParsedCrlAtPath(t, client, "/v1/pki/crl/delta")
+			deltaCrl := getParsedCrlAtPath(t, client, "pki/crl/delta")
 			if !requireSerialNumberInCRL(nil, deltaCrl, newLeafSerial) {
 				// Check if it is on the main CRL because its already regenerated.
 				mainCRL := getParsedCrlAtPath(t, client, defaultCrlPath)
@@ -1226,7 +1221,7 @@ func TestTidyIssuerAssociation(t *testing.T) {
 
 	// This leaf's revInfo entry should have an issuer associated
 	// with it.
-	entry, err := s.Get(ctx, revokedPath+normalizeSerial(leafSerial))
+	entry, err := s.Get(t.Context(), revokedPath+normalizeSerial(leafSerial))
 	require.NoError(t, err)
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Value)
@@ -1264,7 +1259,7 @@ func TestTidyIssuerAssociation(t *testing.T) {
 	}
 
 	// Ensure we don't have an association on this leaf any more.
-	entry, err = s.Get(ctx, revokedPath+normalizeSerial(leafSerial))
+	entry, err = s.Get(t.Context(), revokedPath+normalizeSerial(leafSerial))
 	require.NoError(t, err)
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Value)
@@ -1312,7 +1307,7 @@ func TestTidyIssuerAssociation(t *testing.T) {
 	}
 
 	// Finally, double-check we associated things correctly.
-	entry, err = s.Get(ctx, revokedPath+normalizeSerial(leafSerial))
+	entry, err = s.Get(t.Context(), revokedPath+normalizeSerial(leafSerial))
 	require.NoError(t, err)
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Value)
@@ -1328,7 +1323,7 @@ func requestCrlFromBackend(t *testing.T, s logical.Storage, b *backend) *logical
 		Path:      "crl/pem",
 		Storage:   s,
 	}
-	resp, err := b.HandleRequest(context.Background(), crlReq)
+	resp, err := b.HandleRequest(t.Context(), crlReq)
 	require.NoError(t, err, "crl req failed with an error")
 	require.NotNil(t, resp, "crl response was nil with no error")
 	require.False(t, resp.IsError(), "crl error response: %v", resp)
@@ -1441,7 +1436,7 @@ hbiiPARizZA/Tsna/9ox1qDT
 func TestCRLIssuerRemoval(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	b, s := CreateBackendWithStorage(t)
 
 	// Create a single root, configure delta CRLs, and rotate CRLs to prep a
@@ -1572,7 +1567,7 @@ func TestRevokeExpiredCert(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Revoke the expired certificate.
-	resp, err = CBWrite(b, s, "revoke", map[string]interface{}{
+	_, err = CBWrite(b, s, "revoke", map[string]interface{}{
 		"serial_number": newLeafSerial,
 	})
 	require.NoError(t, err)

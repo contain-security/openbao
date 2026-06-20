@@ -13,11 +13,71 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 )
 
-func (c *Sys) RotateRootStatus() (*RekeyStatusResponse, error) {
+type RotateInitRequest struct {
+	SecretShares        int      `json:"secret_shares"`
+	SecretThreshold     int      `json:"secret_threshold"`
+	PGPKeys             []string `json:"pgp_keys"`
+	Backup              bool     `json:"backup"`
+	RequireVerification bool     `json:"require_verification"`
+}
+
+type RotateStatusResponse struct {
+	Complete             bool     `json:"complete,omitempty"`
+	Keys                 []string `json:"keys,omitempty"`
+	KeysB64              []string `json:"keys_base64,omitempty"`
+	Nonce                string   `json:"nonce"`
+	Started              bool     `json:"started"`
+	T                    int      `json:"t"`
+	N                    int      `json:"n"`
+	Progress             int      `json:"progress"`
+	Required             int      `json:"required"`
+	PGPFingerprints      []string `json:"pgp_fingerprints"`
+	Backup               bool     `json:"backup"`
+	VerificationRequired bool     `json:"verification_required"`
+	VerificationNonce    string   `json:"verification_nonce"`
+}
+
+type RotateUpdateResponse struct {
+	Nonce                string   `json:"nonce"`
+	Complete             bool     `json:"complete"`
+	Keys                 []string `json:"keys"`
+	KeysB64              []string `json:"keys_base64"`
+	PGPFingerprints      []string `json:"pgp_fingerprints"`
+	Backup               bool     `json:"backup"`
+	VerificationRequired bool     `json:"verification_required"`
+	VerificationNonce    string   `json:"verification_nonce,omitempty"`
+}
+
+type RotateRetrieveResponse struct {
+	Nonce   string              `json:"nonce" mapstructure:"nonce"`
+	Keys    map[string][]string `json:"keys" mapstructure:"keys"`
+	KeysB64 map[string][]string `json:"keys_base64" mapstructure:"keys_base64"`
+}
+
+type RotateVerificationStatusResponse struct {
+	Nonce    string `json:"nonce"`
+	Started  bool   `json:"started"`
+	T        int    `json:"t"`
+	N        int    `json:"n"`
+	Progress int    `json:"progress"`
+}
+
+type RotateVerificationUpdateResponse struct {
+	Nonce    string `json:"nonce"`
+	Complete bool   `json:"complete"`
+}
+
+type KeyStatus struct {
+	Term        int       `json:"term"`
+	InstallTime time.Time `json:"install_time"`
+	Encryptions int       `json:"encryptions"`
+}
+
+func (c *Sys) RotateRootStatus() (*RotateStatusResponse, error) {
 	return c.RotateRootStatusWithContext(context.Background())
 }
 
-func (c *Sys) RotateRootStatusWithContext(ctx context.Context) (*RekeyStatusResponse, error) {
+func (c *Sys) RotateRootStatusWithContext(ctx context.Context) (*RotateStatusResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 	r := c.c.NewRequest(http.MethodGet, "/v1/sys/rotate/root/init")
@@ -26,20 +86,20 @@ func (c *Sys) RotateRootStatusWithContext(ctx context.Context) (*RekeyStatusResp
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyStatusResponse
+		Data *RotateStatusResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
 }
 
-func (c *Sys) RotateRecoveryStatus() (*RekeyStatusResponse, error) {
+func (c *Sys) RotateRecoveryStatus() (*RotateStatusResponse, error) {
 	return c.RotateRecoveryStatusWithContext(context.Background())
 }
 
-func (c *Sys) RotateRecoveryStatusWithContext(ctx context.Context) (*RekeyStatusResponse, error) {
+func (c *Sys) RotateRecoveryStatusWithContext(ctx context.Context) (*RotateStatusResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 	r := c.c.NewRequest(http.MethodGet, "/v1/sys/rotate/recovery/init")
@@ -48,20 +108,20 @@ func (c *Sys) RotateRecoveryStatusWithContext(ctx context.Context) (*RekeyStatus
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyStatusResponse
+		Data *RotateStatusResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
 }
 
-func (c *Sys) RotateRootInit(config *RekeyInitRequest) (*RekeyStatusResponse, error) {
+func (c *Sys) RotateRootInit(config *RotateInitRequest) (*RotateStatusResponse, error) {
 	return c.RotateRootInitWithContext(context.Background(), config)
 }
 
-func (c *Sys) RotateRootInitWithContext(ctx context.Context, config *RekeyInitRequest) (*RekeyStatusResponse, error) {
+func (c *Sys) RotateRootInitWithContext(ctx context.Context, config *RotateInitRequest) (*RotateStatusResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -74,20 +134,20 @@ func (c *Sys) RotateRootInitWithContext(ctx context.Context, config *RekeyInitRe
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyStatusResponse
+		Data *RotateStatusResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
 }
 
-func (c *Sys) RotateRecoveryInit(config *RekeyInitRequest) (*RekeyStatusResponse, error) {
+func (c *Sys) RotateRecoveryInit(config *RotateInitRequest) (*RotateStatusResponse, error) {
 	return c.RotateRecoveryInitWithContext(context.Background(), config)
 }
 
-func (c *Sys) RotateRecoveryInitWithContext(ctx context.Context, config *RekeyInitRequest) (*RekeyStatusResponse, error) {
+func (c *Sys) RotateRecoveryInitWithContext(ctx context.Context, config *RotateInitRequest) (*RotateStatusResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -100,10 +160,10 @@ func (c *Sys) RotateRecoveryInitWithContext(ctx context.Context, config *RekeyIn
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyStatusResponse
+		Data *RotateStatusResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
@@ -122,7 +182,7 @@ func (c *Sys) RotateRootCancelWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
 func (c *Sys) RotateRecoveryCancel() error {
@@ -138,14 +198,14 @@ func (c *Sys) RotateRecoveryCancelWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
-func (c *Sys) RotateRootUpdate(shard, nonce string) (*RekeyUpdateResponse, error) {
+func (c *Sys) RotateRootUpdate(shard, nonce string) (*RotateUpdateResponse, error) {
 	return c.RotateRootUpdateWithContext(context.Background(), shard, nonce)
 }
 
-func (c *Sys) RotateRootUpdateWithContext(ctx context.Context, shard, nonce string) (*RekeyUpdateResponse, error) {
+func (c *Sys) RotateRootUpdateWithContext(ctx context.Context, shard, nonce string) (*RotateUpdateResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -163,20 +223,20 @@ func (c *Sys) RotateRootUpdateWithContext(ctx context.Context, shard, nonce stri
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyUpdateResponse
+		Data *RotateUpdateResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
 }
 
-func (c *Sys) RotateRecoveryUpdate(shard, nonce string) (*RekeyUpdateResponse, error) {
+func (c *Sys) RotateRecoveryUpdate(shard, nonce string) (*RotateUpdateResponse, error) {
 	return c.RotateRecoveryUpdateWithContext(context.Background(), shard, nonce)
 }
 
-func (c *Sys) RotateRecoveryUpdateWithContext(ctx context.Context, shard, nonce string) (*RekeyUpdateResponse, error) {
+func (c *Sys) RotateRecoveryUpdateWithContext(ctx context.Context, shard, nonce string) (*RotateUpdateResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -194,20 +254,20 @@ func (c *Sys) RotateRecoveryUpdateWithContext(ctx context.Context, shard, nonce 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyUpdateResponse
+		Data *RotateUpdateResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
 }
 
-func (c *Sys) RotateRootRetrieveBackup() (*RekeyRetrieveResponse, error) {
+func (c *Sys) RotateRootRetrieveBackup() (*RotateRetrieveResponse, error) {
 	return c.RotateRootRetrieveBackupWithContext(context.Background())
 }
 
-func (c *Sys) RotateRootRetrieveBackupWithContext(ctx context.Context) (*RekeyRetrieveResponse, error) {
+func (c *Sys) RotateRootRetrieveBackupWithContext(ctx context.Context) (*RotateRetrieveResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -216,7 +276,7 @@ func (c *Sys) RotateRootRetrieveBackupWithContext(ctx context.Context) (*RekeyRe
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	secret, err := ParseSecret(resp.Body)
 	if err != nil {
@@ -226,7 +286,7 @@ func (c *Sys) RotateRootRetrieveBackupWithContext(ctx context.Context) (*RekeyRe
 		return nil, errors.New("data from server response is empty")
 	}
 
-	var result RekeyRetrieveResponse
+	var result RotateRetrieveResponse
 	err = mapstructure.Decode(secret.Data, &result)
 	if err != nil {
 		return nil, err
@@ -235,11 +295,11 @@ func (c *Sys) RotateRootRetrieveBackupWithContext(ctx context.Context) (*RekeyRe
 	return &result, err
 }
 
-func (c *Sys) RotateRecoveryRetrieveBackup() (*RekeyRetrieveResponse, error) {
+func (c *Sys) RotateRecoveryRetrieveBackup() (*RotateRetrieveResponse, error) {
 	return c.RotateRecoveryRetrieveBackupWithContext(context.Background())
 }
 
-func (c *Sys) RotateRecoveryRetrieveBackupWithContext(ctx context.Context) (*RekeyRetrieveResponse, error) {
+func (c *Sys) RotateRecoveryRetrieveBackupWithContext(ctx context.Context) (*RotateRetrieveResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -248,7 +308,7 @@ func (c *Sys) RotateRecoveryRetrieveBackupWithContext(ctx context.Context) (*Rek
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	secret, err := ParseSecret(resp.Body)
 	if err != nil {
@@ -258,7 +318,7 @@ func (c *Sys) RotateRecoveryRetrieveBackupWithContext(ctx context.Context) (*Rek
 		return nil, errors.New("data from server response is empty")
 	}
 
-	var result RekeyRetrieveResponse
+	var result RotateRetrieveResponse
 	err = mapstructure.Decode(secret.Data, &result)
 	if err != nil {
 		return nil, err
@@ -281,7 +341,7 @@ func (c *Sys) RotateRootDeleteBackupWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
 func (c *Sys) RotateRecoveryDeleteBackup() error {
@@ -298,14 +358,14 @@ func (c *Sys) RotateRecoveryDeleteBackupWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
-func (c *Sys) RotateRootVerificationStatus() (*RekeyVerificationStatusResponse, error) {
+func (c *Sys) RotateRootVerificationStatus() (*RotateVerificationStatusResponse, error) {
 	return c.RotateRootVerificationStatusWithContext(context.Background())
 }
 
-func (c *Sys) RotateRootVerificationStatusWithContext(ctx context.Context) (*RekeyVerificationStatusResponse, error) {
+func (c *Sys) RotateRootVerificationStatusWithContext(ctx context.Context) (*RotateVerificationStatusResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -314,20 +374,20 @@ func (c *Sys) RotateRootVerificationStatusWithContext(ctx context.Context) (*Rek
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyVerificationStatusResponse
+		Data *RotateVerificationStatusResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
 }
 
-func (c *Sys) RotateRecoveryVerificationStatus() (*RekeyVerificationStatusResponse, error) {
+func (c *Sys) RotateRecoveryVerificationStatus() (*RotateVerificationStatusResponse, error) {
 	return c.RotateRecoveryVerificationStatusWithContext(context.Background())
 }
 
-func (c *Sys) RotateRecoveryVerificationStatusWithContext(ctx context.Context) (*RekeyVerificationStatusResponse, error) {
+func (c *Sys) RotateRecoveryVerificationStatusWithContext(ctx context.Context) (*RotateVerificationStatusResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -336,20 +396,20 @@ func (c *Sys) RotateRecoveryVerificationStatusWithContext(ctx context.Context) (
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyVerificationStatusResponse
+		Data *RotateVerificationStatusResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
 }
 
-func (c *Sys) RotateRootVerificationUpdate(shard, nonce string) (*RekeyVerificationUpdateResponse, error) {
+func (c *Sys) RotateRootVerificationUpdate(shard, nonce string) (*RotateVerificationUpdateResponse, error) {
 	return c.RotateRootVerificationUpdateWithContext(context.Background(), shard, nonce)
 }
 
-func (c *Sys) RotateRootVerificationUpdateWithContext(ctx context.Context, shard, nonce string) (*RekeyVerificationUpdateResponse, error) {
+func (c *Sys) RotateRootVerificationUpdateWithContext(ctx context.Context, shard, nonce string) (*RotateVerificationUpdateResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -367,20 +427,20 @@ func (c *Sys) RotateRootVerificationUpdateWithContext(ctx context.Context, shard
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyVerificationUpdateResponse
+		Data *RotateVerificationUpdateResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
 }
 
-func (c *Sys) RotateRecoveryVerificationUpdate(shard, nonce string) (*RekeyVerificationUpdateResponse, error) {
+func (c *Sys) RotateRecoveryVerificationUpdate(shard, nonce string) (*RotateVerificationUpdateResponse, error) {
 	return c.RotateRecoveryVerificationUpdateWithContext(context.Background(), shard, nonce)
 }
 
-func (c *Sys) RotateRecoveryVerificationUpdateWithContext(ctx context.Context, shard, nonce string) (*RekeyVerificationUpdateResponse, error) {
+func (c *Sys) RotateRecoveryVerificationUpdateWithContext(ctx context.Context, shard, nonce string) (*RotateVerificationUpdateResponse, error) {
 	ctx, cancelFunc := c.c.withConfiguredTimeout(ctx)
 	defer cancelFunc()
 
@@ -398,10 +458,10 @@ func (c *Sys) RotateRecoveryVerificationUpdateWithContext(ctx context.Context, s
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var result struct {
-		Data *RekeyVerificationUpdateResponse
+		Data *RotateVerificationUpdateResponse
 	}
 	err = resp.DecodeJSON(&result)
 	return result.Data, err
@@ -421,7 +481,7 @@ func (c *Sys) RotateRootVerificationCancelWithContext(ctx context.Context) error
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
 func (c *Sys) RotateRecoveryVerificationCancel() error {
@@ -438,11 +498,12 @@ func (c *Sys) RotateRecoveryVerificationCancelWithContext(ctx context.Context) e
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
 // Deprecated: use RotateKeyring instead.
 func (c *Sys) Rotate() error {
+	//nolint:staticcheck // method already marked as deprecated
 	return c.RotateWithContext(context.Background())
 }
 
@@ -457,7 +518,7 @@ func (c *Sys) RotateWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
 func (c *Sys) RotateKeyring() error {
@@ -474,7 +535,7 @@ func (c *Sys) RotateKeyringWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
 func (c *Sys) RotateRoot() error {
@@ -491,7 +552,7 @@ func (c *Sys) RotateRootWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return resp.Body.Close()
+	return resp.Body.Close() //nolint:errcheck
 }
 
 func (c *Sys) KeyStatus() (*KeyStatus, error) {
@@ -508,7 +569,7 @@ func (c *Sys) KeyStatusWithContext(ctx context.Context) (*KeyStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	secret, err := ParseSecret(resp.Body)
 	if err != nil {
@@ -562,10 +623,4 @@ func (c *Sys) KeyStatusWithContext(ctx context.Context) (*KeyStatus, error) {
 	}
 
 	return &result, err
-}
-
-type KeyStatus struct {
-	Term        int       `json:"term"`
-	InstallTime time.Time `json:"install_time"`
-	Encryptions int       `json:"encryptions"`
 }

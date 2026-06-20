@@ -1,4 +1,6 @@
-const arches: string[] = ["amd64", "arm64", "armhf", "armv7hl", "arm", "riscv64", "aarch64", "x86_64", "ppc64le", "s390x"];
+const arches: string[] = [
+    "amd64", "arm64", "armhf", "armv7hl", "arm", "armv6", "armv7", "riscv64", "aarch64", "x86_64", "ppc64le", "s390x",
+];
 
 interface ArchPackageMap {
     [key: string]: string[];
@@ -115,22 +117,22 @@ export function GetReleases(response): Releases {
             }
             if (a.browser_download_url.toLowerCase().includes("docker")) {
                 release.assets.linux.docker[arch].push(a.browser_download_url);
-                // docker urls also contain "linux", so contiune if we find it
+                // docker urls also contain "linux", so continue if we find it
                 continue;
             }
             if (a.browser_download_url.toLowerCase().includes(".rpm")) {
                 release.assets.linux.rpm[arch].push(a.browser_download_url);
-                // rpm urls also contain "linux", so contiune if we find it
+                // rpm urls also contain "linux", so continue if we find it
                 continue;
             }
             if (a.browser_download_url.toLowerCase().includes(".deb")) {
                 release.assets.linux.deb[arch].push(a.browser_download_url);
-                // deb urls also contain "linux", so contiune if we find it
+                // deb urls also contain "linux", so continue if we find it
                 continue;
             }
             if (a.browser_download_url.toLowerCase().includes(".pkg")) {
                 release.assets.linux.pkg[arch].push(a.browser_download_url);
-                // pkg urls also contain "linux", so contiune if we find it
+                // pkg urls also contain "linux", so continue if we find it
                 continue;
             }
             if (a.browser_download_url.toLowerCase().includes("linux")) {

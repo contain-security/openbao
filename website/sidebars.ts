@@ -39,6 +39,7 @@ const sidebars: SidebarsConfig = {
                                 "internals/telemetry/metrics/availability",
                                 "internals/telemetry/metrics/database",
                                 "internals/telemetry/metrics/policy",
+                                "internals/telemetry/metrics/postgresql",
                                 "internals/telemetry/metrics/raft",
                                 "internals/telemetry/metrics/secrets",
                                 "internals/telemetry/metrics/storage",
@@ -73,27 +74,39 @@ const sidebars: SidebarsConfig = {
                         "concepts/integrated-storage/autopilot",
                     ],
                 },
+                {
+                    "Namespaces": [
+                        "concepts/namespaces/index",
+                        "concepts/namespaces/sealable-namespaces",
+                    ]
+                },
                 "concepts/pgp-gpg-keybase",
                 "concepts/recovery-mode",
                 "concepts/resource-quotas",
-                "concepts/transform",
                 "concepts/mount-migration",
                 "concepts/duration-format",
                 "concepts/user-lockout",
+                "concepts/cel",
             ],
             Guides: [
+                "guides/migration",
+                "guides/sealable-namespaces",
                 {
                     Unsealing: [
                         {
                             "PKCS#11": [
-                                "guides/unseal/pkcs11/securosys"
-                            ]
-                        }
-                    ]
-                }
+                                "guides/unseal/pkcs11/securosys",
+                                "guides/unseal/pkcs11/utimaco",
+                                "guides/unseal/pkcs11/duokey",
+                                "guides/unseal/pkcs11/nitrokey",
+                            ],
+                        },
+                    ],
+                },
             ],
             Configuration: [
                 "configuration/index",
+                "configuration/audit",
                 "configuration/self-init",
                 {
                     listener: [
@@ -125,6 +138,7 @@ const sidebars: SidebarsConfig = {
                         "configuration/storage/postgresql",
                     ],
                 },
+                "configuration/plugins",
                 "configuration/telemetry",
                 "configuration/ui",
                 "configuration/user-lockout",
@@ -176,6 +190,7 @@ const sidebars: SidebarsConfig = {
                 "commands/list",
                 "commands/login",
                 "commands/monitor",
+                "commands/namespace",
                 {
                     operator: [
                         "commands/operator/index",
@@ -188,6 +203,7 @@ const sidebars: SidebarsConfig = {
                         "commands/operator/raft",
                         "commands/operator/rekey",
                         "commands/operator/rotate",
+                        "commands/operator/rotate-keys",
                         "commands/operator/seal",
                         "commands/operator/step-down",
                         "commands/operator/unseal",
@@ -209,6 +225,7 @@ const sidebars: SidebarsConfig = {
                         "commands/plugin/index",
                         "commands/plugin/deregister",
                         "commands/plugin/info",
+                        "commands/plugin/init",
                         "commands/plugin/list",
                         "commands/plugin/register",
                         "commands/plugin/reload",
@@ -349,6 +366,7 @@ const sidebars: SidebarsConfig = {
                         "secrets/pki/setup",
                         "secrets/pki/quick-start-root-ca",
                         "secrets/pki/quick-start-intermediate-ca",
+                        "secrets/pki/quick-start-cel",
                         "secrets/pki/considerations",
                         "secrets/pki/troubleshooting-acme",
                         "secrets/pki/rotation-primitives",
@@ -407,6 +425,7 @@ const sidebars: SidebarsConfig = {
             "Audit Devices": [
                 "audit/index",
                 "audit/file",
+                "audit/http",
                 "audit/syslog",
                 "audit/socket",
             ],
@@ -443,6 +462,7 @@ const sidebars: SidebarsConfig = {
                                         "platform/k8s/helm/examples/ha-tls",
                                         "platform/k8s/helm/examples/injector-tls",
                                         "platform/k8s/helm/examples/injector-tls-cert-manager",
+                                        "platform/k8s/helm/examples/snapshot-cronjob",
                                     ],
                                 },
                             ],
@@ -452,7 +472,7 @@ const sidebars: SidebarsConfig = {
                                 "platform/k8s/injector/installation",
                                 "platform/k8s/injector/examples",
                             ],
-                            "Vault CSI Provider": [
+                            "OpenBao CSI Provider": [
                                 "platform/k8s/csi/index",
                                 "platform/k8s/csi/installation",
                                 "platform/k8s/csi/configurations",
@@ -483,57 +503,6 @@ const sidebars: SidebarsConfig = {
                 "upgrading/ha-upgrade",
                 "upgrading/plugins",
             ],
-            "Release Notes": [
-                "release-notes/index",
-                "release-notes/2-3-0",
-                "release-notes/2-2-0",
-                "release-notes/2-1-0",
-                "release-notes/2-0-0",
-            ],
-        },
-        "known-issues",
-        {
-            "Deprecation Notices": ["deprecation/index", "deprecation/faq", "deprecation/unauthed-rekey"],
-            Policies: [
-                "policies/index",
-                "policies/brand",
-                "policies/deprecation",
-                "policies/migration",
-                "policies/plugins",
-                "policies/release",
-                "policies/support",
-                "policies/osps-baseline",
-            ],
-            Contributing: [
-                "contributing/index",
-                "contributing/code-organization",
-                "contributing/packaging",
-            ],
-            RFCs: [
-                "rfcs/index",
-                "rfcs/paginated-lists",
-                "rfcs/mlock-removal",
-                "rfcs/signed-commits",
-                "rfcs/transactions",
-                "rfcs/split-mount-tables",
-                "rfcs/scan-operation",
-                "rfcs/acme-tls-listeners",
-                "rfcs/acl-paginated-lists",
-                "rfcs/ssh-ca-multi-issuer",
-                "rfcs/cel-best-practices",
-                "rfcs/cel-pki",
-                "rfcs/cel-jwt",
-                "rfcs/filtering-list",
-                "rfcs/static-auto-unseal",
-                "rfcs/inline-auth",
-                "rfcs/authenticated-rekey",
-                "rfcs/self-init",
-                "rfcs/external-keys",
-                {
-                  "UI/UX": ["rfcs/web-ui-modernization"],
-                },
-            ],
-            FAQ: ["faq/index", "deprecation/faq", "auth/login-mfa/faq"],
         },
         "glossary",
     ],

@@ -122,7 +122,8 @@ func (h *CLIHandler) Auth(c *api.Client, m map[string]string, nonInteractive boo
 		v, err := strconv.ParseBool(s)
 		if err != nil {
 			return false, fmt.Errorf(
-				"failed to parse value for %q, err=%w", f, err)
+				"failed to parse value for %q, err=%w", f, err,
+			)
 		}
 
 		return v, nil
@@ -253,9 +254,9 @@ func (h *CLIHandler) Auth(c *api.Client, m map[string]string, nonInteractive boo
 	case s := <-doneCh:
 		return s.secret, s.err
 	case <-sigintCh:
-		return nil, errors.New("Interrupted")
+		return nil, errors.New("interrupted")
 	case <-time.After(2 * time.Minute):
-		return nil, errors.New("Timed out waiting for response from provider")
+		return nil, errors.New("timed out waiting for response from provider")
 	}
 }
 
@@ -331,7 +332,7 @@ func fetchAuthURL(c *api.Client, role, mount, callbackPort string, callbackMetho
 	}
 
 	if authURL == "" {
-		return "", "", nil, fmt.Errorf("Unable to authorize role %q with redirect_uri %q. Check OpenBao logs for more information.", role, redirectURI)
+		return "", "", nil, fmt.Errorf("Unable to authorize role %q with redirect_uri %q. Check OpenBao logs for more information.", role, redirectURI) //nolint:staticcheck // user-facing error
 	}
 
 	return authURL, clientNonce, secret, nil
@@ -375,7 +376,8 @@ func parseError(err error) (string, string) {
 
 // Help method for OIDC cli
 func (h *CLIHandler) Help() string {
-	help := fmt.Sprintf(`
+	help := fmt.Sprintf(
+		`
 Usage: bao login -method=oidc [CONFIG K=V...]
 
   The OIDC auth method allows users to authenticate using an OIDC provider.

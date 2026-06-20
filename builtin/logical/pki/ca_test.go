@@ -46,7 +46,8 @@ func TestBackend_CA_Steps(t *testing.T) {
 		},
 	}
 	cluster := vault.NewTestCluster(t, coreConfig, &vault.TestClusterOptions{
-		HandlerFunc: vaulthttp.Handler,
+		HandlerFunc:         vaulthttp.Handler,
+		DisableStandbyReads: true,
 	})
 	cluster.Start()
 	defer cluster.Cleanup()
@@ -319,7 +320,7 @@ func runSteps(t *testing.T, rootB, intB *backend, client *api.Client, rootName, 
 				Operation: logical.ReadOperation,
 				Storage:   rootB.storage,
 			}
-			resp, err := rootB.HandleRequest(context.Background(), req)
+			resp, err := rootB.HandleRequest(t.Context(), req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -346,7 +347,7 @@ func runSteps(t *testing.T, rootB, intB *backend, client *api.Client, rootName, 
 				Operation: logical.ReadOperation,
 				Storage:   rootB.storage,
 			}
-			resp, err := rootB.HandleRequest(context.Background(), req)
+			resp, err := rootB.HandleRequest(t.Context(), req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -548,7 +549,7 @@ func runSteps(t *testing.T, rootB, intB *backend, client *api.Client, rootName, 
 				Operation: logical.ReadOperation,
 				Storage:   rootB.storage,
 			}
-			resp, err := rootB.HandleRequest(context.Background(), req)
+			resp, err := rootB.HandleRequest(t.Context(), req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -557,13 +558,14 @@ func runSteps(t *testing.T, rootB, intB *backend, client *api.Client, rootName, 
 			}
 
 			var crlBytes []byte
-			if derPemOrJSON == 2 {
+			switch derPemOrJSON {
+			case 2:
 				// Old endpoint
 				crlBytes = []byte(resp.Data["certificate"].(string))
-			} else if derPemOrJSON == 3 {
+			case 3:
 				// New endpoint
 				crlBytes = []byte(resp.Data["crl"].(string))
-			} else {
+			default:
 				// DER or PEM
 				crlBytes = resp.Data["http_raw_body"].([]byte)
 			}

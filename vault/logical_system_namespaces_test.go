@@ -6,7 +6,7 @@ package vault
 import (
 	"context"
 	"fmt"
-	"maps"
+	"net/http"
 	"path"
 	"testing"
 	"time"
@@ -39,11 +39,11 @@ func testCreateNamespace(t *testing.T, ctx context.Context, b logical.Backend, n
 func TestNamespaceBackend_Set(t *testing.T) {
 	t.Parallel()
 	b := testSystemBackend(t)
-	rootCtx := namespace.RootContext(context.Background())
+	rootCtx := namespace.RootContext(t.Context())
 
 	t.Run("create namespace", func(t *testing.T) {
-		customMetadata := map[string]string{"abc": "def"}
 		req := logical.TestRequest(t, logical.UpdateOperation, "namespaces/foo")
+		customMetadata := map[string]string{"abc": "def"}
 		req.Data["custom_metadata"] = customMetadata
 		res, err := b.HandleRequest(rootCtx, req)
 		require.NoError(t, err)
@@ -53,8 +53,48 @@ func TestNamespaceBackend_Set(t *testing.T) {
 		require.Equal(t, res.Data["path"].(string), "foo/")
 		require.Equal(t, res.Data["tainted"].(bool), false)
 		require.Equal(t, res.Data["locked"].(bool), false)
-		require.Equal(t, res.Data["custom_metadata"], customMetadata,
-			"read custom_metadata does not match original custom_metadata")
+		require.Equal(t, res.Data["custom_metadata"], customMetadata)
+	})
+
+	t.Run("create sealable namespace", func(t *testing.T) {
+		req := logical.TestRequest(t, logical.UpdateOperation, "namespaces/sealable-hcl")
+		customMetadata := map[string]string{"abc": "def"}
+		sealConfig := `seal "shamir" {
+    shares = 3
+    threshold = 2
+}`
+		req.Data["custom_metadata"] = customMetadata
+		req.Data["seal"] = sealConfig
+		res, err := b.HandleRequest(rootCtx, req)
+		require.NoError(t, err)
+
+		require.NotEmpty(t, res.Data["uuid"].(string), "namespace has no UUID")
+		require.NotEmpty(t, res.Data["id"].(string), "namespace has no ID")
+		require.Equal(t, res.Data["path"].(string), "sealable-hcl/")
+		require.Equal(t, res.Data["tainted"].(bool), false)
+		require.Equal(t, res.Data["locked"].(bool), false)
+		require.Equal(t, res.Data["custom_metadata"], customMetadata)
+		require.Equal(t, res.Data["key_threshold"], 2)
+		require.Len(t, res.Data["key_shares"], 3)
+	})
+
+	t.Run("create sealable namespace with json seal config", func(t *testing.T) {
+		req := logical.TestRequest(t, logical.UpdateOperation, "namespaces/sealable-json")
+		customMetadata := map[string]string{"abc": "def"}
+		sealConfig := `{ "seal": { "shamir": { "shares": 3, "threshold": 2 } } }`
+		req.Data["custom_metadata"] = customMetadata
+		req.Data["seal"] = sealConfig
+		res, err := b.HandleRequest(rootCtx, req)
+		require.NoError(t, err)
+
+		require.NotEmpty(t, res.Data["uuid"].(string), "namespace has no UUID")
+		require.NotEmpty(t, res.Data["id"].(string), "namespace has no ID")
+		require.Equal(t, res.Data["path"].(string), "sealable-json/")
+		require.Equal(t, res.Data["tainted"].(bool), false)
+		require.Equal(t, res.Data["locked"].(bool), false)
+		require.Equal(t, res.Data["custom_metadata"], customMetadata)
+		require.Equal(t, res.Data["key_threshold"], 2)
+		require.Len(t, res.Data["key_shares"], 3)
 	})
 
 	t.Run("create namespace name validation", func(t *testing.T) {
@@ -104,7 +144,7 @@ func TestNamespaceBackend_Set(t *testing.T) {
 		}
 
 		for _, tc := range tcases {
-			ctx := namespace.RootContext(context.Background())
+			ctx := namespace.RootContext(t.Context())
 			if tc.namespace != nil {
 				ctx = namespace.ContextWithNamespace(ctx, tc.namespace)
 			}
@@ -142,12 +182,69 @@ func TestNamespaceBackend_Set(t *testing.T) {
 		require.Equal(t, res.Data["custom_metadata"], newMetadata,
 			"read custom_metadata does not match original custom_metadata")
 	})
+
+	t.Run("create namespace with bad seal config should fail", func(t *testing.T) {
+		sealConfig := `seal "shamir" {}`
+
+		req := logical.TestRequest(t, logical.UpdateOperation, "namespaces/bad_seal_ns")
+		req.Data["seal"] = sealConfig
+		_, err := b.HandleRequest(rootCtx, req)
+		require.Error(t, err)
+
+		// namespace should not exist
+		req = logical.TestRequest(t, logical.ReadOperation, "namespaces/bad_seal_ns")
+		res, err := b.HandleRequest(rootCtx, req)
+		require.NoError(t, err)
+		require.Empty(t, res)
+	})
+
+	t.Run("create namespace with multiple seal configs should fail", func(t *testing.T) {
+		sealConfig := `
+seal "shamir" {
+    shares = 3
+    threshold = 2
+}
+
+seal "transit" {
+	address = "https://openbao:8200"
+	token = "s.Qf1s5zigZ4OX6akYjQXJC1jY"
+}
+`
+
+		req := logical.TestRequest(t, logical.UpdateOperation, "namespaces/bad_seal_ns")
+		req.Data["seal"] = sealConfig
+		_, err := b.HandleRequest(rootCtx, req)
+		require.Error(t, err)
+
+		// namespace should not exist
+		req = logical.TestRequest(t, logical.ReadOperation, "namespaces/bad_seal_ns")
+		res, err := b.HandleRequest(rootCtx, req)
+		require.NoError(t, err)
+		require.Empty(t, res)
+	})
+
+	t.Run("create namespace with invalid seal config should fail", func(t *testing.T) {
+		sealConfig := `
+seal "shamir" {
+`
+
+		req := logical.TestRequest(t, logical.UpdateOperation, "namespaces/bad_seal_ns")
+		req.Data["seal"] = sealConfig
+		_, err := b.HandleRequest(rootCtx, req)
+		require.Error(t, err)
+
+		// namespace should not exist
+		req = logical.TestRequest(t, logical.ReadOperation, "namespaces/bad_seal_ns")
+		res, err := b.HandleRequest(rootCtx, req)
+		require.NoError(t, err)
+		require.Empty(t, res)
+	})
 }
 
 func TestNamespaceBackend_Read(t *testing.T) {
 	t.Parallel()
 	b := testSystemBackend(t)
-	rootCtx := namespace.RootContext(context.Background())
+	rootCtx := namespace.RootContext(t.Context())
 
 	t.Run("reads existing namespace as expected", func(t *testing.T) {
 		customMetadata := map[string]string{"abc": "def"}
@@ -196,112 +293,58 @@ func TestNamespaceBackend_Read(t *testing.T) {
 func TestNamespaceBackend_Patch(t *testing.T) {
 	t.Parallel()
 	b := testSystemBackend(t)
-	rootCtx := namespace.RootContext(context.Background())
+	ctx := namespace.RootContext(t.Context())
 
-	t.Run("add metadata keys", func(t *testing.T) {
-		testCreateNamespace(t, rootCtx, b, "foo", nil)
+	testCreateNamespace(t, ctx, b, "foo", map[string]string{"abc": "def"})
 
+	tests := []struct {
+		patch map[string]any    // The patch to supply.
+		want  map[string]string // The desired output.
+		err   bool              // Should it error?
+	}{
+		{
+			patch: map[string]any{"def": "abc"},
+			want:  map[string]string{"abc": "def", "def": "abc"},
+		},
+		{
+			patch: map[string]any{"def": "abc", "abc": nil},
+			want:  map[string]string{"def": "abc"},
+		},
+		{
+			patch: nil,
+			want:  map[string]string{},
+		},
+		{
+			patch: map[string]any{"foo": "bar", "bar": 1},
+			err:   true,
+		},
+		{
+			patch: map[string]any{"foo": "bar"},
+			want:  map[string]string{"foo": "bar"},
+		},
+		{
+			patch: map[string]any{},
+			want:  map[string]string{"foo": "bar"},
+		},
+	}
+
+	for _, tt := range tests {
 		req := logical.TestRequest(t, logical.PatchOperation, "namespaces/foo")
-		patch := map[string]string{"abc": "def"}
-		req.Data["custom_metadata"] = patch
-		res, err := b.HandleRequest(rootCtx, req)
-		require.NoError(t, err)
-		outputMetadata := res.Data["custom_metadata"].(map[string]string)
-		require.Equal(t, outputMetadata, patch, "returned metadata does not match metadata patch")
-
-		req = logical.TestRequest(t, logical.PatchOperation, "namespaces/foo")
-		patch = map[string]string{"testing": "hello"}
-		req.Data["custom_metadata"] = patch
-		res, err = b.HandleRequest(rootCtx, req)
-		require.NoError(t, err)
-		outputMetadata = res.Data["custom_metadata"].(map[string]string)
-		expected := map[string]string{"abc": "def"}
-		maps.Copy(expected, patch)
-		require.Equal(t, outputMetadata, expected, "returned metadata does not match expected updated metadata")
-
-		req = logical.TestRequest(t, logical.PatchOperation, "namespaces/foo")
-		illegalPatch := map[string]interface{}{"illegal": 1337}
-		req.Data["custom_metadata"] = illegalPatch
-		res, err = b.HandleRequest(rootCtx, req)
-		require.ErrorContains(t, err, "custom_metadata values must be strings", "got unwanted error")
-		require.Empty(t, res, "patch failure should have empty response")
-	})
-
-	t.Run("remove metadata keys", func(t *testing.T) {
-		customMetadata := map[string]string{"abc": "def"}
-		testCreateNamespace(t, rootCtx, b, "bar", customMetadata)
-
-		req := logical.TestRequest(t, logical.PatchOperation, "namespaces/bar")
-		patch := map[string]interface{}{"abc": nil}
-		req.Data["custom_metadata"] = patch
-		res, err := b.HandleRequest(rootCtx, req)
-		require.NoError(t, err)
-		outputMetadata := res.Data["custom_metadata"].(map[string]string)
-		require.Equal(t, outputMetadata, map[string]string{},
-			"expected custom_metadata to be empty after patching out only key")
-
-		req = logical.TestRequest(t, logical.PatchOperation, "namespaces/bar")
-		patch = map[string]interface{}{"abc": nil}
-		req.Data["custom_metadata"] = patch
-		res, err = b.HandleRequest(rootCtx, req)
-		require.NoError(t, err)
-		outputMetadata = res.Data["custom_metadata"].(map[string]string)
-		require.Equal(t, outputMetadata, map[string]string{},
-			"expected custom_metadata to stay empty after patching out non-existing key")
-	})
-
-	t.Run("add and remove keys in one shot", func(t *testing.T) {
-		customMetadata := map[string]string{"abc": "def"}
-		testCreateNamespace(t, rootCtx, b, "baz", customMetadata)
-
-		req := logical.TestRequest(t, logical.PatchOperation, "namespaces/baz")
-		patch := map[string]interface{}{"abc": nil, "testing": "hello"}
-		req.Data["custom_metadata"] = patch
-		res, err := b.HandleRequest(rootCtx, req)
-		require.NoError(t, err)
-		outputMetadata := res.Data["custom_metadata"].(map[string]string)
-		require.Equal(t, outputMetadata, map[string]string{"testing": "hello"},
-			"expected old key to be removed and new key to be added")
-	})
-
-	t.Run("patch nested namespace", func(t *testing.T) {
-		fooNs := testCreateNamespace(t, rootCtx, b, "foo", nil)
-		nestedCtx := namespace.ContextWithNamespace(rootCtx, fooNs)
-		testCreateNamespace(t, nestedCtx, b, "bar", map[string]string{"abc": "def"})
-
-		// ctx ns = /, path = foo/bar
-		req := logical.TestRequest(t, logical.PatchOperation, "namespaces/foo/bar")
-		patch := map[string]string{"abc": "fed"}
-		req.Data["custom_metadata"] = patch
-		res, err := b.HandleRequest(rootCtx, req)
-		require.Error(t, err)
-		require.Empty(t, res)
-
-		// ctx ns = foo, path = bar
-		req = logical.TestRequest(t, logical.PatchOperation, "namespaces/bar")
-		patch = map[string]string{"testing": "hello"}
-		req.Data["custom_metadata"] = patch
-		res, err = b.HandleRequest(nestedCtx, req)
-		require.NoError(t, err)
-		outputMetadata := res.Data["custom_metadata"].(map[string]string)
-		expected := map[string]string{"abc": "def"}
-		maps.Copy(expected, patch)
-		require.Equal(t, outputMetadata, expected, "returned metadata does not match expected updated metadata")
-
-		// ctx ns = foo, path = bar
-		req = logical.TestRequest(t, logical.PatchOperation, "namespaces/bar")
-		illegalPatch := map[string]interface{}{"illegal": 1337}
-		req.Data["custom_metadata"] = illegalPatch
-		res, err = b.HandleRequest(nestedCtx, req)
-		require.ErrorContains(t, err, "custom_metadata values must be strings", "got unwanted error")
-		require.Empty(t, res, "patch failure should have empty response")
-	})
+		req.Data["custom_metadata"] = tt.patch
+		res, err := b.HandleRequest(ctx, req)
+		if tt.err {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
+			require.Equal(t, tt.want, res.Data["custom_metadata"])
+		}
+	}
 }
 
 func TestNamespaceBackend_Delete(t *testing.T) {
 	t.Parallel()
 	b := testSystemBackend(t)
-	rootCtx := namespace.RootContext(context.Background())
+	rootCtx := namespace.RootContext(t.Context())
 
 	t.Run("delete namespace", func(t *testing.T) {
 		testCreateNamespace(t, rootCtx, b, "foo", nil)
@@ -333,6 +376,10 @@ func TestNamespaceBackend_Delete(t *testing.T) {
 		res, err := b.HandleRequest(rootCtx, req)
 		// fails as foobar contains child namespaces
 		require.Error(t, err)
+		require.Error(t, res.Error())
+		coded, ok := err.(logical.HTTPCodedError)
+		require.True(t, ok, "expected HTTPCodedError")
+		require.Equal(t, http.StatusConflict, coded.Code())
 
 		req = logical.TestRequest(t, logical.DeleteOperation, "namespaces/baz")
 		res, err = b.HandleRequest(nestedCtx, req)
@@ -373,7 +420,7 @@ func TestNamespaceBackend_Delete(t *testing.T) {
 
 func TestNamespaceBackend_List(t *testing.T) {
 	b := testSystemBackend(t)
-	rootCtx := namespace.RootContext(context.Background())
+	rootCtx := namespace.RootContext(t.Context())
 
 	t.Run("list is empty if root is only namespace", func(t *testing.T) {
 		req := logical.TestRequest(t, logical.ListOperation, "namespaces")
@@ -488,7 +535,7 @@ func TestNamespaceBackend_List(t *testing.T) {
 
 func TestNamespaceBackend_Scan(t *testing.T) {
 	b := testSystemBackend(t)
-	rootCtx := namespace.RootContext(context.Background())
+	rootCtx := namespace.RootContext(t.Context())
 
 	t.Run("scan is empty if root is only namespace", func(t *testing.T) {
 		req := logical.TestRequest(t, logical.ScanOperation, "namespaces")
@@ -605,7 +652,7 @@ func TestNamespaceBackend_Scan(t *testing.T) {
 // TestNamespaceBackend_Lock tests the Lock namespace operation on logical request level
 func TestNamespaceBackend_Lock(t *testing.T) {
 	b := testSystemBackend(t)
-	rootCtx := namespace.RootContext(context.Background())
+	rootCtx := namespace.RootContext(t.Context())
 
 	t.Run("cannot lock nonexistent, root or already locked namespaces", func(t *testing.T) {
 		testNamespace := testCreateNamespace(t, rootCtx, b, "test", nil)
@@ -700,7 +747,7 @@ func TestNamespaceBackend_Lock(t *testing.T) {
 func TestNamespaceBackend_Unlock(t *testing.T) {
 	core, _, rootToken := TestCoreUnsealed(t)
 	b := core.systemBackend
-	rootCtx := namespace.RootContext(context.Background())
+	rootCtx := namespace.RootContext(t.Context())
 
 	t.Run("cannot unlock namespace with missing request details", func(t *testing.T) {
 		testNS := testCreateNamespace(t, rootCtx, b, "test", nil)

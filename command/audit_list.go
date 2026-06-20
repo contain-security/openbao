@@ -32,7 +32,7 @@ func (c *AuditListCommand) Help() string {
 	helpText := `
 Usage: bao audit list [options]
 
-  Lists the enabled audit devices in the Vault server. The output lists the
+  Lists the enabled audit devices in the OpenBao server. The output lists the
   enabled audit devices and the options for those devices.
 
   List all audit devices:
@@ -127,7 +127,8 @@ func (c *AuditListCommand) simpleAudits(audits map[string]*api.Audit) []string {
 	columns := []string{"Path | Type | Description"}
 	for _, path := range paths {
 		audit := audits[path]
-		columns = append(columns, fmt.Sprintf("%s | %s | %s",
+		columns = append(columns, fmt.Sprintf(
+			"%s | %s | %s",
 			audit.Path,
 			audit.Type,
 			audit.Description,
@@ -158,7 +159,8 @@ func (c *AuditListCommand) detailedAudits(audits map[string]*api.Audit) []string
 			replication = "local"
 		}
 
-		columns = append(columns, fmt.Sprintf("%s | %s | %s | %s | %s",
+		columns = append(columns, fmt.Sprintf(
+			"%s | %s | %s | %s | %s",
 			path,
 			audit.Type,
 			audit.Description,

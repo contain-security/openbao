@@ -5,7 +5,6 @@ package pki
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -41,10 +40,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/armon/go-metrics"
-	"github.com/fatih/structs"
 	"github.com/go-test/deep"
 	"github.com/go-viper/mapstructure/v2"
+	metrics "github.com/hashicorp/go-metrics/compat"
 	"github.com/hashicorp/go-secure-stdlib/strutil"
 	auth "github.com/openbao/openbao/api/auth/userpass/v2"
 	"github.com/openbao/openbao/api/v2"
@@ -52,6 +50,7 @@ import (
 	logicaltest "github.com/openbao/openbao/helper/testhelpers/logical"
 	vaulthttp "github.com/openbao/openbao/http"
 	"github.com/openbao/openbao/sdk/v2/helper/certutil"
+	"github.com/openbao/openbao/sdk/v2/helper/structtomap"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/openbao/openbao/vault"
 	"golang.org/x/net/idna"
@@ -337,8 +336,6 @@ func TestBackend_Roles(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
-
 		t.Run(tc.name, func(t *testing.T) {
 			initTest.Do(setCerts)
 			b, _ := CreateBackendWithStorage(t)
@@ -940,7 +937,7 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 		// to hit all of the various values below. However, for normal
 		// testing we use a randomized time for maximum fuzziness.
 	*/
-	var seed int64 = 1
+	var seed int64
 	fixedSeed := api.ReadBaoVariable("BAO_PKITESTS_FIXED_SEED")
 	if len(fixedSeed) == 0 {
 		seed = time.Now().UnixNano()
@@ -973,7 +970,7 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 		roleTestStep.Data = roleVals.ToResponseData()
 		roleTestStep.Data["generate_lease"] = false
 		ret = append(ret, roleTestStep)
-		issueTestStep.Data = structs.New(issueVals).Map()
+		issueTestStep.Data = structtomap.Map(issueVals)
 		switch {
 		case issueTestStep.ErrorOk:
 			issueTestStep.Check = genericErrorOkCheck
@@ -1318,16 +1315,16 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 
 	// Common names to test with the various role flags toggled
 	var commonNames struct {
-		Localhost            bool `structs:"localhost"`
-		BareDomain           bool `structs:"example.com"`
-		SecondDomain         bool `structs:"foobar.com"`
-		SubDomain            bool `structs:"foo.example.com"`
-		Wildcard             bool `structs:"*.example.com"`
-		SubSubdomain         bool `structs:"foo.bar.example.com"`
-		SubSubdomainWildcard bool `structs:"*.bar.example.com"`
-		GlobDomain           bool `structs:"fooexample.com"`
-		IDN                  bool `structs:"daɪˈɛrɨsɨs"`
-		AnyHost              bool `structs:"porkslap.beer"`
+		Localhost            bool `json:"localhost"`
+		BareDomain           bool `json:"example.com"`
+		SecondDomain         bool `json:"foobar.com"`
+		SubDomain            bool `json:"foo.example.com"`
+		Wildcard             bool `json:"*.example.com"`
+		SubSubdomain         bool `json:"foo.bar.example.com"`
+		SubSubdomainWildcard bool `json:"*.bar.example.com"`
+		GlobDomain           bool `json:"fooexample.com"`
+		IDN                  bool `json:"daɪˈɛrɨsɨs"`
+		AnyHost              bool `json:"porkslap.beer"`
 	}
 
 	// Adds a series of tests based on the current selection of
@@ -1336,7 +1333,7 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 	// This allows for a variety of common names to be tested in various
 	// combinations with allowed toggles of the role
 	addCnTests := func() {
-		cnMap := structs.New(commonNames).Map()
+		cnMap := structtomap.Map(commonNames)
 		for name, allowedInt := range cnMap {
 			roleVals.KeyType = "rsa"
 			roleVals.KeyBits = 2048
@@ -1387,8 +1384,8 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 
 			var extUsage x509.ExtKeyUsage
 			i := mathRand.Int() % 4
-			switch {
-			case i == 0:
+			switch i {
+			case 0:
 				// Punt on this for now since I'm not clear the actual proper
 				// way to format these
 				if name != "daɪˈɛrɨsɨs" {
@@ -1397,10 +1394,10 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 					break
 				}
 				fallthrough
-			case i == 1:
+			case 1:
 				extUsage = x509.ExtKeyUsageServerAuth
 				roleVals.ServerFlag = true
-			case i == 2:
+			case 2:
 				extUsage = x509.ExtKeyUsageClientAuth
 				roleVals.ClientFlag = true
 			default:
@@ -1711,7 +1708,7 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 				}
 			}
 			t.Fatalf("error parsing otherName: %q", s)
-			return
+			return ret
 		}
 		oid1 := "1.3.6.1.4.1.311.20.2.3"
 		oth1str := oid1 + ";utf8:devops@nope.com"
@@ -1895,7 +1892,7 @@ func TestBackend_PathFetchValidRaw(t *testing.T) {
 	t.Parallel()
 	b, storage := CreateBackendWithStorage(t)
 
-	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+	resp, err := b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "root/generate/internal",
 		Storage:   storage,
@@ -1912,7 +1909,7 @@ func TestBackend_PathFetchValidRaw(t *testing.T) {
 	rootCaAsPem := resp.Data["certificate"].(string)
 
 	// Chain should contain the root.
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.ReadOperation,
 		Path:       "ca_chain",
 		Storage:    storage,
@@ -1928,7 +1925,7 @@ func TestBackend_PathFetchValidRaw(t *testing.T) {
 	}
 
 	// The ca/pem should return us the actual CA...
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.ReadOperation,
 		Path:       "ca/pem",
 		Storage:    storage,
@@ -1945,7 +1942,7 @@ func TestBackend_PathFetchValidRaw(t *testing.T) {
 		t.Fatal("failed to get raw cert")
 	}
 
-	_, err = b.HandleRequest(context.Background(), &logical.Request{
+	_, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "roles/example",
 		Storage:   storage,
@@ -1960,7 +1957,7 @@ func TestBackend_PathFetchValidRaw(t *testing.T) {
 	require.NoError(t, err, "error setting up pki role: %v", err)
 
 	// Now issue a short-lived certificate from our pki-external.
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "issue/example",
 		Storage:   storage,
@@ -1979,7 +1976,7 @@ func TestBackend_PathFetchValidRaw(t *testing.T) {
 	expectedCert := []byte(issueCrtAsPem)
 
 	// get der cert
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.ReadOperation,
 		Path:      fmt.Sprintf("cert/%s/raw", expectedSerial),
 		Storage:   storage,
@@ -2002,7 +1999,7 @@ func TestBackend_PathFetchValidRaw(t *testing.T) {
 	}
 
 	// get pem
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.ReadOperation,
 		Path:      fmt.Sprintf("cert/%s/raw/pem", expectedSerial),
 		Storage:   storage,
@@ -2034,7 +2031,7 @@ func TestBackend_PathFetchCertList(t *testing.T) {
 		"ttl":         "6h",
 	}
 
-	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+	resp, err := b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "root/generate/internal",
 		Storage:    storage,
@@ -2056,16 +2053,20 @@ func TestBackend_PathFetchCertList(t *testing.T) {
 		"delta_crl_distribution_points": "http://127.0.0.1:8200/v1/pki/crl/delta",
 	}
 
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "config/urls",
 		Storage:    storage,
 		Data:       urlsData,
 		MountPoint: "pki/",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	schema.ValidateResponse(t, schema.GetResponseSchema(t, b.Route("config/urls"), logical.UpdateOperation), resp, true)
 
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.ReadOperation,
 		Path:       "config/urls",
 		Storage:    storage,
@@ -2087,7 +2088,7 @@ func TestBackend_PathFetchCertList(t *testing.T) {
 		"max_ttl":          "4h",
 	}
 
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "roles/test-example",
 		Storage:    storage,
@@ -2107,7 +2108,7 @@ func TestBackend_PathFetchCertList(t *testing.T) {
 		certData := map[string]interface{}{
 			"common_name": "example.test.com",
 		}
-		resp, err = b.HandleRequest(context.Background(), &logical.Request{
+		resp, err = b.HandleRequest(t.Context(), &logical.Request{
 			Operation:  logical.UpdateOperation,
 			Path:       "issue/test-example",
 			Storage:    storage,
@@ -2125,7 +2126,7 @@ func TestBackend_PathFetchCertList(t *testing.T) {
 	}
 
 	// list certs
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.ListOperation,
 		Path:       "certs",
 		Storage:    storage,
@@ -2143,7 +2144,7 @@ func TestBackend_PathFetchCertList(t *testing.T) {
 	}
 
 	// list certs/
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.ListOperation,
 		Path:       "certs/",
 		Storage:    storage,
@@ -2173,7 +2174,6 @@ func TestBackend_SignVerbatim(t *testing.T) {
 		{testName: "Any", keyType: "any"},
 	}
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
 			runTestSignVerbatim(t, tc.keyType)
 		})
@@ -2190,7 +2190,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 		"not_after":   "9999-12-31T23:59:59Z",
 	}
 
-	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+	resp, err := b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "root/generate/internal",
 		Storage:    storage,
@@ -2245,7 +2245,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 	if keyType == "rsa" {
 		signVerbatimData["signature_bits"] = 512
 	}
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "sign-verbatim",
 		Storage:    storage,
@@ -2271,7 +2271,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 		"key_type":            keyType,
 		"not_before_duration": "2h",
 	}
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "roles/test",
 		Storage:    storage,
@@ -2284,7 +2284,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sign-verbatim/test",
 		Storage:   storage,
@@ -2303,7 +2303,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 	if resp.Secret != nil {
 		t.Fatal("got a lease when we should not have")
 	}
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sign-verbatim/test",
 		Storage:   storage,
@@ -2347,7 +2347,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 	}
 
 	// Test the Basic Constraints extension: when the option is explicitly specified (as an explicit option or in a role), the issued certificate must be generated with the Basic Constraints extension.
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sign-verbatim",
 		Storage:   storage,
@@ -2398,7 +2398,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 		"not_before_duration":                "2h",
 		"basic_constraints_valid_for_non_ca": true,
 	}
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "roles/test",
 		Storage:    storage,
@@ -2412,7 +2412,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 		t.Fatal(err)
 	}
 
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sign-verbatim/test",
 		Storage:   storage,
@@ -2454,7 +2454,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 	}
 
 	// Test the Basic Constraints parameter specified in the API call takes priority and overwrites the value set in the role.
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sign-verbatim/test",
 		Storage:   storage,
@@ -2493,7 +2493,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 	}
 
 	// Now check signing a certificate using the not_after input using the Y10K value
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sign-verbatim/test",
 		Storage:   storage,
@@ -2550,7 +2550,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 		"generate_lease": true,
 		"key_type":       keyType,
 	}
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "roles/test",
 		Storage:    storage,
@@ -2563,7 +2563,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sign-verbatim/test",
 		Storage:   storage,
@@ -2758,6 +2758,10 @@ func TestBackend_SignIntermediate_AllowedPastCAValidity(t *testing.T) {
 	resp, err := CBWrite(b_int, s_int, "intermediate/generate/internal", map[string]interface{}{
 		"common_name": "myint.com",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	schema.ValidateResponse(t, schema.GetResponseSchema(t, b_root.Route("intermediate/generate/internal"), logical.UpdateOperation), resp, true)
 	require.Contains(t, resp.Data, "key_id")
 	intKeyId := resp.Data["key_id"].(keyID)
@@ -2868,7 +2872,7 @@ func TestBackend_SignSelfIssued(t *testing.T) {
 		"ttl":         "172800",
 	}
 
-	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+	resp, err := b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "root/generate/internal",
 		Storage:    storage,
@@ -2897,7 +2901,7 @@ func TestBackend_SignSelfIssued(t *testing.T) {
 	}
 
 	ss, _ := getSelfSigned(t, template, template, key)
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "root/sign-self-issued",
 		Storage:   storage,
@@ -2928,7 +2932,7 @@ func TestBackend_SignSelfIssued(t *testing.T) {
 		BasicConstraintsValid: true,
 	}
 	ss, ssCert := getSelfSigned(t, template, issuer, key)
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "root/sign-self-issued",
 		Storage:   storage,
@@ -2948,7 +2952,7 @@ func TestBackend_SignSelfIssued(t *testing.T) {
 	}
 
 	ss, _ = getSelfSigned(t, template, template, key)
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "root/sign-self-issued",
 		Storage:   storage,
@@ -2975,7 +2979,7 @@ func TestBackend_SignSelfIssued(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sc := b.makeStorageContext(context.Background(), storage)
+	sc := b.makeStorageContext(t.Context(), storage)
 	signingBundle, err := sc.fetchCAInfo(defaultRef, ReadOnlyUsage)
 	if err != nil {
 		t.Fatal(err)
@@ -3012,7 +3016,7 @@ func TestBackend_SignSelfIssued_DifferentTypes(t *testing.T) {
 		"key_bits":    "521",
 	}
 
-	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+	resp, err := b.HandleRequest(t.Context(), &logical.Request{
 		Operation:  logical.UpdateOperation,
 		Path:       "root/generate/internal",
 		Storage:    storage,
@@ -3042,7 +3046,7 @@ func TestBackend_SignSelfIssued_DifferentTypes(t *testing.T) {
 
 	// Tests absent the flag
 	ss, _ := getSelfSigned(t, template, template, key)
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "root/sign-self-issued",
 		Storage:   storage,
@@ -3063,7 +3067,7 @@ func TestBackend_SignSelfIssued_DifferentTypes(t *testing.T) {
 
 	// Tests with flag present but false
 	ss, _ = getSelfSigned(t, template, template, key)
-	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+	resp, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "root/sign-self-issued",
 		Storage:   storage,
@@ -3082,7 +3086,7 @@ func TestBackend_SignSelfIssued_DifferentTypes(t *testing.T) {
 
 	// Test with flag present and true
 	ss, _ = getSelfSigned(t, template, template, key)
-	_, err = b.HandleRequest(context.Background(), &logical.Request{
+	_, err = b.HandleRequest(t.Context(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "root/sign-self-issued",
 		Storage:   storage,
@@ -3545,7 +3549,88 @@ func TestBackend_URI_SANs(t *testing.T) {
 	if cert.URIs[0].String() != URI0.String() || cert.URIs[1].String() != URI1.String() {
 		t.Fatalf(
 			"expected URIs SANs %v to equal provided values spiffe://host.com/something, http://someuri/abc",
-			cert.URIs)
+			cert.URIs,
+		)
+	}
+}
+
+func TestBackend_IP_SANs(t *testing.T) {
+	t.Parallel()
+	b, s := CreateBackendWithStorage(t)
+
+	var err error
+
+	_, err = CBWrite(b, s, "root/generate/internal", map[string]interface{}{
+		"ttl":         "40h",
+		"common_name": "example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = CBWrite(b, s, "roles/test", map[string]interface{}{
+		"allowed_domains":      []string{"foobar.com", "zipzap.com"},
+		"allow_bare_domains":   true,
+		"allow_subdomains":     true,
+		"allow_ip_sans":        true,
+		"allowed_ip_sans_cidr": []string{"4.3.2.1/32", "1.2.3.4/31"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First test some bad stuff that shouldn't work
+	_, err = CBWrite(b, s, "issue/test", map[string]interface{}{
+		"common_name": "foobar.com",
+		"ip_sans":     "5.6.7.8",
+		"alt_names":   "foo.foobar.com,bar.foobar.com",
+		"ttl":         "1h",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	// Test valid single entry
+	_, err = CBWrite(b, s, "issue/test", map[string]interface{}{
+		"common_name": "foobar.com",
+		"ip_sans":     "1.2.3.4",
+		"alt_names":   "foo.foobar.com,bar.foobar.com",
+		"ttl":         "1h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Test multiple entries
+	resp, err := CBWrite(b, s, "issue/test", map[string]interface{}{
+		"common_name": "foobar.com",
+		"ip_sans":     "1.2.3.4,1.2.3.5",
+		"alt_names":   "foo.foobar.com,bar.foobar.com",
+		"ttl":         "1h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certStr := resp.Data["certificate"].(string)
+	block, _ := pem.Decode([]byte(certStr))
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	IP0 := net.ParseIP("1.2.3.4")
+	IP1 := net.ParseIP("1.2.3.5")
+
+	if len(cert.IPAddresses) != 2 {
+		t.Fatalf("expected 2 valid IPs SANs %v", cert.IPAddresses)
+	}
+
+	if cert.IPAddresses[0].String() != IP0.String() || cert.IPAddresses[1].String() != IP1.String() {
+		t.Fatalf(
+			"expected IPs SANs %v to equal provided values 1.2.3.4, 1.2.3.5",
+			cert.IPAddresses,
+		)
 	}
 }
 
@@ -3761,7 +3846,7 @@ func TestBackend_AllowedDomainsTemplate(t *testing.T) {
 	}
 
 	// Issue certificate with userpassToken.
-	secret, err := client.Auth().Login(context.TODO(), userpassAuth)
+	secret, err := client.Auth().Login(t.Context(), userpassAuth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3808,7 +3893,7 @@ func TestBackend_AllowedDomainsTemplate(t *testing.T) {
 
 func TestReadWriteDeleteRoles(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 	coreConfig := &vault.CoreConfig{
 		CredentialBackends: map[string]logical.Factory{
 			"userpass": userpass.Factory,
@@ -3900,6 +3985,7 @@ func TestReadWriteDeleteRoles(t *testing.T) {
 		"server_flag":                        true,
 		"allow_bare_domains":                 false,
 		"allow_ip_sans":                      true,
+		"allowed_ip_sans_cidr":               []interface{}{},
 		"ext_key_usage_oids":                 []interface{}{},
 		"allow_any_name":                     false,
 		"ext_key_usage":                      []interface{}{},
@@ -4035,7 +4121,8 @@ func TestBackend_RevokePlusTidy_Intermediate(t *testing.T) {
 	// This test is not parallelizable.
 	inmemSink := metrics.NewInmemSink(
 		1000000*time.Hour,
-		2000000*time.Hour)
+		2000000*time.Hour,
+	)
 
 	metricsConf := metrics.DefaultConfig("")
 	metricsConf.EnableHostname = false
@@ -4080,9 +4167,16 @@ func TestBackend_RevokePlusTidy_Intermediate(t *testing.T) {
 		"maintain_stored_certificate_counts":       true,
 		"publish_stored_certificate_count_metrics": true,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	_, err = client.Logical().Write("/sys/plugins/reload/backend", map[string]interface{}{
 		"mounts": "pki/",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Check the metrics initialized in order to calculate backendUUID for /pki
 	// BackendUUID not consistent during tests with UUID from /sys/mounts/pki
@@ -4120,14 +4214,22 @@ func TestBackend_RevokePlusTidy_Intermediate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	// Set up Metric Configuration, then restart to enable it
 	_, err = client.Logical().Write("pki2/config/auto-tidy", map[string]interface{}{
 		"maintain_stored_certificate_counts":       true,
 		"publish_stored_certificate_count_metrics": true,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	_, err = client.Logical().Write("/sys/plugins/reload/backend", map[string]interface{}{
 		"mounts": "pki2/",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a CSR for the intermediate CA
 	secret, err := client.Logical().Write("pki2/intermediate/generate/internal", nil)
@@ -4349,7 +4451,8 @@ func TestBackend_RevokePlusTidy_MultipleCerts(t *testing.T) {
 	// Set up metrics and Vault cluster
 	inmemSink := metrics.NewInmemSink(
 		1000000*time.Hour,
-		2000000*time.Hour)
+		2000000*time.Hour,
+	)
 
 	metricsConf := metrics.DefaultConfig("")
 	metricsConf.EnableHostname = false
@@ -4403,6 +4506,9 @@ func TestBackend_RevokePlusTidy_MultipleCerts(t *testing.T) {
 	_, err = client.Logical().Write("/sys/plugins/reload/backend", map[string]interface{}{
 		"mounts": "pki/",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Set the cluster's certificate as the root CA in /pki
 	pemBundleRootCA := string(cluster.CACertPEM) + string(cluster.CAKeyPEM)
@@ -4591,7 +4697,6 @@ func TestBackend_Root_FullCAChain(t *testing.T) {
 		{testName: "EC", keyType: "ec"},
 	}
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
 			runFullCAChainTest(t, tc.keyType)
 		})
@@ -5547,7 +5652,7 @@ func TestIssuanceTTLs(t *testing.T) {
 func TestSealWrappedStorageConfigured(t *testing.T) {
 	t.Parallel()
 	b, _ := CreateBackendWithStorage(t)
-	wrappedEntries := b.Backend.PathsSpecial.SealWrapStorage
+	wrappedEntries := b.PathsSpecial.SealWrapStorage
 
 	// Make sure our legacy bundle is within the list
 	// NOTE: do not convert these test values to constants, we should always have these paths within seal wrap config
@@ -6040,15 +6145,15 @@ func TestBackend_IfModifiedSinceHeaders(t *testing.T) {
 
 	// Now, do a three-way swap of names (old->tmp; new->old; tmp->new). This
 	// should result in all names/CRLs being invalidated.
-	_, err = client.Logical().JSONMergePatch(ctx, "pki/issuer/old-root", map[string]interface{}{
+	_, err = client.Logical().JSONMergePatch(t.Context(), "pki/issuer/old-root", map[string]interface{}{
 		"issuer_name": "tmp-root",
 	})
 	require.NoError(t, err)
-	_, err = client.Logical().JSONMergePatch(ctx, "pki/issuer/new-root", map[string]interface{}{
+	_, err = client.Logical().JSONMergePatch(t.Context(), "pki/issuer/new-root", map[string]interface{}{
 		"issuer_name": "old-root",
 	})
 	require.NoError(t, err)
-	_, err = client.Logical().JSONMergePatch(ctx, "pki/issuer/tmp-root", map[string]interface{}{
+	_, err = client.Logical().JSONMergePatch(t.Context(), "pki/issuer/tmp-root", map[string]interface{}{
 		"issuer_name": "new-root",
 	})
 	require.NoError(t, err)
@@ -6142,7 +6247,7 @@ func TestBackend_IfModifiedSinceHeaders(t *testing.T) {
 func TestBackend_InitializeCertificateCounts(t *testing.T) {
 	t.Parallel()
 	b, s := CreateBackendWithStorage(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Set up an Issuer and Role
 	// We need a root certificate to write/revoke certificates with
@@ -6168,7 +6273,7 @@ func TestBackend_InitializeCertificateCounts(t *testing.T) {
 	}
 
 	// Put certificates A, B, C, D, E in backend
-	var certificates []string = []string{"a", "b", "c", "d", "e"}
+	certificates := []string{"a", "b", "c", "d", "e"}
 	serials := make([]string, 5)
 	for i, cn := range certificates {
 		resp, err = CBWrite(b, s, "issue/example", map[string]interface{}{
@@ -6191,7 +6296,7 @@ func TestBackend_InitializeCertificateCounts(t *testing.T) {
 	// Revoke certificates A + B
 	revocations := serials[0:2]
 	for _, key := range revocations {
-		resp, err = CBWrite(b, s, "revoke", map[string]interface{}{
+		_, err = CBWrite(b, s, "revoke", map[string]interface{}{
 			"serial_number": key,
 		})
 		if err != nil {
@@ -6214,7 +6319,7 @@ func TestBackend_InitializeCertificateCounts(t *testing.T) {
 	// Revoke certificates C, D
 	dirtyRevocations := serials[2:4]
 	for _, key := range dirtyRevocations {
-		resp, err = CBWrite(b, s, "revoke", map[string]interface{}{
+		_, err = CBWrite(b, s, "revoke", map[string]interface{}{
 			"serial_number": key,
 		})
 		if err != nil {
@@ -6225,7 +6330,7 @@ func TestBackend_InitializeCertificateCounts(t *testing.T) {
 	// Put certificates F, G in the backend
 	dirtyCertificates := []string{"f", "g"}
 	for _, cn := range dirtyCertificates {
-		resp, err = CBWrite(b, s, "issue/example", map[string]interface{}{
+		_, err = CBWrite(b, s, "issue/example", map[string]interface{}{
 			"common_name": cn + ".example.com",
 		})
 		if err != nil {
@@ -6405,7 +6510,7 @@ nebuK22ZwzbPe4NhOvAdfNDElkrrtGvTnzkDB7ezPYjelA==
 	require.NotNil(t, resp.Data)
 	require.NotEmpty(t, resp.Data["certificate"])
 
-	resp, err = CBWrite(b, s, "issuers/import/bundle", map[string]interface{}{
+	_, err = CBWrite(b, s, "issuers/import/bundle", map[string]interface{}{
 		"pem_bundle": resp.Data["certificate"].(string),
 	})
 	require.NoError(t, err)
@@ -6488,7 +6593,7 @@ func TestPKI_EmptyCRLConfigUpgraded(t *testing.T) {
 	// Write an empty CRLConfig into storage.
 	crlConfigEntry, err := logical.StorageEntryJSON("config/crl", &crlConfig{})
 	require.NoError(t, err)
-	err = s.Put(ctx, crlConfigEntry)
+	err = s.Put(t.Context(), crlConfigEntry)
 	require.NoError(t, err)
 
 	resp, err := CBRead(b, s, "config/crl")
@@ -6615,6 +6720,8 @@ func TestPKI_TemplatedAIAs(t *testing.T) {
 	}
 	resp, err = CBWrite(b, s, "root/generate/internal", rootData)
 	require.NoError(t, err)
+	requireSuccessNonNilResponse(t, resp, err, "failed to generate root certificate")
+
 	_, err = CBDelete(b, s, "root")
 	require.NoError(t, err)
 
@@ -6678,6 +6785,7 @@ func TestPKI_TemplatedAIAs(t *testing.T) {
 		"ocsp_servers":                  "http://localhost/c",
 		"delta_crl_distribution_points": "http://localhost/d",
 	})
+	require.NoError(t, err)
 
 	resp, err = CBWrite(b, s, "issue/testing", map[string]interface{}{
 		"common_name": "example.com",
@@ -7028,23 +7136,23 @@ func isDeniedOp(err error) bool {
 
 func pathShouldBeAuthed(t *testing.T, client *api.Client, path string, token string) {
 	client.SetToken("")
-	resp, err := client.Logical().ReadWithContext(ctx, path)
+	resp, err := client.Logical().ReadWithContext(t.Context(), path)
 	if err == nil || !isPermDenied(err) {
 		t.Fatalf("expected failure to read %v while unauthed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().ListWithContext(ctx, path)
+	resp, err = client.Logical().ListWithContext(t.Context(), path)
 	if err == nil || !isPermDenied(err) {
 		t.Fatalf("expected failure to list %v while unauthed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().WriteWithContext(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().WriteWithContext(t.Context(), path, map[string]interface{}{})
 	if err == nil || !isPermDenied(err) {
 		t.Fatalf("expected failure to write %v while unauthed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().DeleteWithContext(ctx, path)
+	resp, err = client.Logical().DeleteWithContext(t.Context(), path)
 	if err == nil || !isPermDenied(err) {
 		t.Fatalf("expected failure to delete %v while unauthed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().JSONMergePatch(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().JSONMergePatch(t.Context(), path, map[string]interface{}{})
 	if err == nil || !isPermDenied(err) {
 		t.Fatalf("expected failure to patch %v while unauthed: %v / %v", path, err, resp)
 	}
@@ -7053,23 +7161,23 @@ func pathShouldBeAuthed(t *testing.T, client *api.Client, path string, token str
 func pathShouldBeUnauthedReadList(t *testing.T, client *api.Client, path string, token string) {
 	// Should be able to read both with and without a token.
 	client.SetToken("")
-	resp, err := client.Logical().ReadWithContext(ctx, path)
+	resp, err := client.Logical().ReadWithContext(t.Context(), path)
 	if err != nil && isPermDenied(err) {
 		// Read will sometimes return permission denied, when the handler
 		// does not support the given operation. Retry with the token.
 		client.SetToken(token)
-		resp2, err2 := client.Logical().ReadWithContext(ctx, path)
+		resp2, err2 := client.Logical().ReadWithContext(t.Context(), path)
 		if err2 != nil && !isUnsupportedPathOperation(err2) {
 			t.Fatalf("unexpected failure to read %v while unauthed: %v / %v\nWhile authed: %v / %v", path, err, resp, err2, resp2)
 		}
 		client.SetToken("")
 	}
-	resp, err = client.Logical().ListWithContext(ctx, path)
+	resp, err = client.Logical().ListWithContext(t.Context(), path)
 	if err != nil && isPermDenied(err) {
 		// List will sometimes return permission denied, when the handler
 		// does not support the given operation. Retry with the token.
 		client.SetToken(token)
-		resp2, err2 := client.Logical().ListWithContext(ctx, path)
+		resp2, err2 := client.Logical().ListWithContext(t.Context(), path)
 		if err2 != nil && !isUnsupportedPathOperation(err2) {
 			t.Fatalf("unexpected failure to list %v while unauthed: %v / %v\nWhile authed: %v / %v", path, err, resp, err2, resp2)
 		}
@@ -7077,44 +7185,44 @@ func pathShouldBeUnauthedReadList(t *testing.T, client *api.Client, path string,
 	}
 
 	// These should all be denied.
-	resp, err = client.Logical().WriteWithContext(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().WriteWithContext(t.Context(), path, map[string]interface{}{})
 	if err == nil || !isDeniedOp(err) {
 		if !strings.Contains(path, "ocsp") || !strings.Contains(err.Error(), "Code: 40") {
 			t.Fatalf("unexpected failure during write on read-only path %v while unauthed: %v / %v", path, err, resp)
 		}
 	}
-	resp, err = client.Logical().DeleteWithContext(ctx, path)
+	resp, err = client.Logical().DeleteWithContext(t.Context(), path)
 	if err == nil || !isDeniedOp(err) {
 		t.Fatalf("unexpected failure during delete on read-only path %v while unauthed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().JSONMergePatch(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().JSONMergePatch(t.Context(), path, map[string]interface{}{})
 	if err == nil || !isDeniedOp(err) {
 		t.Fatalf("unexpected failure during patch on read-only path %v while unauthed: %v / %v", path, err, resp)
 	}
 
 	// Retrying with token should allow read/list, but not modification still.
 	client.SetToken(token)
-	resp, err = client.Logical().ReadWithContext(ctx, path)
+	resp, err = client.Logical().ReadWithContext(t.Context(), path)
 	if err != nil && isPermDenied(err) {
 		t.Fatalf("unexpected failure to read %v while authed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().ListWithContext(ctx, path)
+	resp, err = client.Logical().ListWithContext(t.Context(), path)
 	if err != nil && isPermDenied(err) {
 		t.Fatalf("unexpected failure to list %v while authed: %v / %v", path, err, resp)
 	}
 
 	// Should all be denied.
-	resp, err = client.Logical().WriteWithContext(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().WriteWithContext(t.Context(), path, map[string]interface{}{})
 	if err == nil || !isDeniedOp(err) {
 		if !strings.Contains(path, "ocsp") || !strings.Contains(err.Error(), "Code: 40") {
 			t.Fatalf("unexpected failure during write on read-only path %v while authed: %v / %v", path, err, resp)
 		}
 	}
-	resp, err = client.Logical().DeleteWithContext(ctx, path)
+	resp, err = client.Logical().DeleteWithContext(t.Context(), path)
 	if err == nil || !isDeniedOp(err) {
 		t.Fatalf("unexpected failure during delete on read-only path %v while authed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().JSONMergePatch(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().JSONMergePatch(t.Context(), path, map[string]interface{}{})
 	if err == nil || !isDeniedOp(err) {
 		t.Fatalf("unexpected failure during patch on read-only path %v while authed: %v / %v", path, err, resp)
 	}
@@ -7122,7 +7230,7 @@ func pathShouldBeUnauthedReadList(t *testing.T, client *api.Client, path string,
 
 func pathShouldBeUnauthedWriteOnly(t *testing.T, client *api.Client, path string, token string) {
 	client.SetToken("")
-	resp, err := client.Logical().WriteWithContext(ctx, path, map[string]interface{}{})
+	resp, err := client.Logical().WriteWithContext(t.Context(), path, map[string]interface{}{})
 	if err != nil && isPermDenied(err) {
 		t.Fatalf("unexpected failure to write %v while unauthed: %v / %v", path, err, resp)
 	}
@@ -7130,46 +7238,46 @@ func pathShouldBeUnauthedWriteOnly(t *testing.T, client *api.Client, path string
 	// These should all be denied. However, on OSS, we might end up with
 	// a regular 404, which looks like err == resp == nil; hence we only
 	// fail when there's a non-nil response and/or a non-nil err.
-	resp, err = client.Logical().ReadWithContext(ctx, path)
+	resp, err = client.Logical().ReadWithContext(t.Context(), path)
 	if (err == nil && resp != nil) || (err != nil && !isDeniedOp(err)) {
 		t.Fatalf("unexpected failure during read on write-only path %v while unauthed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().ListWithContext(ctx, path)
+	resp, err = client.Logical().ListWithContext(t.Context(), path)
 	if (err == nil && resp != nil) || (err != nil && !isDeniedOp(err)) {
 		t.Fatalf("unexpected failure during list on write-only path %v while unauthed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().DeleteWithContext(ctx, path)
+	resp, err = client.Logical().DeleteWithContext(t.Context(), path)
 	if (err == nil && resp != nil) || (err != nil && !isDeniedOp(err)) {
 		t.Fatalf("unexpected failure during delete on write-only path %v while unauthed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().JSONMergePatch(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().JSONMergePatch(t.Context(), path, map[string]interface{}{})
 	if (err == nil && resp != nil) || (err != nil && !isDeniedOp(err)) {
 		t.Fatalf("unexpected failure during patch on write-only path %v while unauthed: %v / %v", path, err, resp)
 	}
 
 	// Retrying with token should allow writing, but nothing else.
 	client.SetToken(token)
-	resp, err = client.Logical().WriteWithContext(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().WriteWithContext(t.Context(), path, map[string]interface{}{})
 	if err != nil && isPermDenied(err) {
 		t.Fatalf("unexpected failure to write %v while unauthed: %v / %v", path, err, resp)
 	}
 
 	// These should all be denied.
-	resp, err = client.Logical().ReadWithContext(ctx, path)
+	resp, err = client.Logical().ReadWithContext(t.Context(), path)
 	if (err == nil && resp != nil) || (err != nil && !isDeniedOp(err)) {
 		t.Fatalf("unexpected failure during read on write-only path %v while authed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().ListWithContext(ctx, path)
+	resp, err = client.Logical().ListWithContext(t.Context(), path)
 	if (err == nil && resp != nil) || (err != nil && !isDeniedOp(err)) {
 		if resp != nil || err != nil {
 			t.Fatalf("unexpected failure during list on write-only path %v while authed: %v / %v", path, err, resp)
 		}
 	}
-	resp, err = client.Logical().DeleteWithContext(ctx, path)
+	resp, err = client.Logical().DeleteWithContext(t.Context(), path)
 	if (err == nil && resp != nil) || (err != nil && !isDeniedOp(err)) {
 		t.Fatalf("unexpected failure during delete on write-only path %v while authed: %v / %v", path, err, resp)
 	}
-	resp, err = client.Logical().JSONMergePatch(ctx, path, map[string]interface{}{})
+	resp, err = client.Logical().JSONMergePatch(t.Context(), path, map[string]interface{}{})
 	if (err == nil && resp != nil) || (err != nil && !isDeniedOp(err)) {
 		t.Fatalf("unexpected failure during patch on write-only path %v while authed: %v / %v", path, err, resp)
 	}
@@ -7191,7 +7299,7 @@ var pathAuthChckerMap = map[pathAuthChecker]pathAuthCheckerFunc{
 
 func TestProperAuthing(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 	coreConfig := &vault.CoreConfig{
 		LogicalBackends: map[string]logical.Factory{
 			"pki": Factory,
@@ -7446,11 +7554,12 @@ func TestProperAuthing(t *testing.T) {
 		_, hasPost := openapi_data["post"]
 		_, hasDelete := openapi_data["delete"]
 
-		if handler == shouldBeUnauthedReadList {
+		switch handler {
+		case shouldBeUnauthedReadList:
 			if hasPost || hasDelete {
 				t.Fatalf("Unauthed read-only endpoints should not have POST/DELETE capabilities: %v->%v", openapi_path, raw_path)
 			}
-		} else if handler == shouldBeUnauthedWriteOnly {
+		case shouldBeUnauthedWriteOnly:
 			if hasGet || hasList {
 				t.Fatalf("Unauthed write-only endpoints should not have GET/LIST capabilities: %v->%v", openapi_path, raw_path)
 			}

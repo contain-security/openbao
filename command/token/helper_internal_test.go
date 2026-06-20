@@ -20,26 +20,21 @@ func TestCommand(t *testing.T) {
 }
 
 func TestInternalHelperFilePerms(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	helper, err := NewInternalTokenHelper()
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper.homeDir = tmpDir
+	helper.tokenPath = filepath.Join(tmpDir, ".vault-token")
 
-	tmpFile := filepath.Join(tmpDir, ".vault-token")
-	f, err := os.Create(tmpFile)
+	f, err := os.Create(helper.tokenPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
 
-	fi, err := os.Stat(tmpFile)
+	fi, err := os.Stat(helper.tokenPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +48,7 @@ func TestInternalHelperFilePerms(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fi, err = os.Stat(tmpFile)
+	fi, err = os.Stat(helper.tokenPath)
 	if err != nil {
 		t.Fatal(err)
 	}

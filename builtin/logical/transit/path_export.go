@@ -90,7 +90,7 @@ func (b *backend) pathPolicyExportRead(ctx context.Context, req *logical.Request
 	case exportTypePublicKey:
 	case exportTypeCertificateChain:
 	default:
-		return logical.ErrorResponse(fmt.Sprintf("invalid export type: %s", exportType)), logical.ErrInvalidRequest
+		return logical.ErrorResponse("invalid export type: %s", exportType), logical.ErrInvalidRequest
 	}
 
 	switch format {
@@ -99,7 +99,7 @@ func (b *backend) pathPolicyExportRead(ctx context.Context, req *logical.Request
 	case formatTypeDer:
 	case formatTypePem:
 	default:
-		return logical.ErrorResponse(fmt.Sprintf("invalid format: %s", format)), logical.ErrInvalidRequest
+		return logical.ErrorResponse("invalid format: %s", format), logical.ErrInvalidRequest
 	}
 
 	p, _, err := b.GetPolicy(ctx, keysutil.PolicyRequest{
@@ -111,9 +111,6 @@ func (b *backend) pathPolicyExportRead(ctx context.Context, req *logical.Request
 	}
 	if p == nil {
 		return nil, nil
-	}
-	if !b.System().CachingDisabled() {
-		p.Lock(false)
 	}
 	defer p.Unlock()
 
@@ -289,7 +286,8 @@ func getExportKey(policy *keysutil.Policy, key *keysutil.KeyEntry, exportType st
 				&pem.Block{
 					Type:  "CERTIFICATE",
 					Bytes: derCertificateBytes,
-				})))
+				},
+			)))
 			pemCertificates = append(pemCertificates, pemCert)
 		}
 		certificateChain := strings.Join(pemCertificates, "\n")
@@ -315,10 +313,11 @@ func encodeRSAPrivateKey(key *keysutil.KeyEntry, format string) (string, error) 
 	var derBytes []byte
 	var blockType string
 	var err error
-	if format == "" {
+	switch format {
+	case "":
 		derBytes = x509.MarshalPKCS1PrivateKey(key.RSAKey)
 		blockType = "RSA PRIVATE KEY"
-	} else if format == "der" || format == "pem" {
+	case "der", "pem":
 		derBytes, err = x509.MarshalPKCS8PrivateKey(key.RSAKey)
 		blockType = "PRIVATE KEY"
 	}
@@ -408,10 +407,11 @@ func keyEntryToECPrivateKey(k *keysutil.KeyEntry, curve elliptic.Curve, format s
 	var blockType string
 	var derBytes []byte
 	var err error
-	if format == "" {
+	switch format {
+	case "":
 		derBytes, err = x509.MarshalECPrivateKey(privKey)
 		blockType = "EC PRIVATE KEY"
-	} else if format == "der" || format == "pem" {
+	case "der", "pem":
 		derBytes, err = x509.MarshalPKCS8PrivateKey(privKey)
 		blockType = "PRIVATE KEY"
 	}

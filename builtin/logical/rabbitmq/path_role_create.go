@@ -11,6 +11,7 @@ import (
 
 	rabbithole "github.com/michaelklishin/rabbit-hole/v3"
 	"github.com/openbao/openbao/sdk/v2/framework"
+	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/helper/template"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
@@ -66,7 +67,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, d *fr
 		return nil, err
 	}
 	if role == nil {
-		return logical.ErrorResponse(fmt.Sprintf("unknown role: %s", name)), nil
+		return logical.ErrorResponse("unknown role: %s", name), nil
 	}
 
 	config, err := readConfig(ctx, req.Storage)
@@ -82,6 +83,12 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, d *fr
 	up, err := template.NewTemplate(template.Template(usernameTemplate))
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize username template: %w", err)
+	}
+
+	// basic request validation is now done, but before we actually connect to
+	// RabbitMQ lets check, if we can even persist the lease in the end
+	if b.System().ReplicationState().HasState(consts.ReplicationPerformanceStandby) {
+		return nil, logical.ErrReadOnly
 	}
 
 	um := UsernameMetadata{

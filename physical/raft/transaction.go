@@ -11,13 +11,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
+	"maps"
+	"math"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/armon/go-metrics"
+	metrics "github.com/hashicorp/go-metrics/compat"
+	"github.com/openbao/openbao/sdk/v2/helper/pointerutil"
 	"github.com/openbao/openbao/sdk/v2/physical"
 	bolt "go.etcd.io/bbolt"
 )
@@ -183,6 +188,7 @@ type RaftTransaction struct {
 	haveFinishedTx bool
 	index          uint64
 	started        time.Time
+	cleanup        runtime.Cleanup
 }
 
 var _ physical.Transaction = &RaftTransaction{}
@@ -213,16 +219,57 @@ func (b *RaftBackend) newTransaction(ctx context.Context, writable bool) (*RaftT
 		b.fsm.fastTxnTracker.trackTransaction(index)
 	}
 
-	return &RaftTransaction{
+	updates := make(map[string]*raftTxnUpdateRecord)
+	reads := make(map[string]*LogOperation)
+	lists := make(map[string]map[string]map[int]*LogOperation)
+
+	txn := &RaftTransaction{
 		b:        b,
 		tx:       tx,
-		updates:  make(map[string]*raftTxnUpdateRecord),
-		reads:    make(map[string]*LogOperation),
-		lists:    make(map[string]map[string]map[int]*LogOperation),
+		updates:  updates,
+		reads:    reads,
+		lists:    lists,
 		writable: writable,
 		index:    index,
 		started:  time.Now(),
-	}, nil
+	}
+
+	txn.cleanup = runtime.AddCleanup(txn, func(startIndex uint64) {
+		// make sure we don't use txn directly in the function,
+		// otherwise we prevent it from ever being garbage collected.
+
+		log := b.logger.Debug
+		if b.transactionLeakCounter.Add(1) == 1 { // "Add" returns the new value, for the first leak we want to print an error
+			log = b.logger.Error
+		}
+		log(
+			"transaction was leaked",
+			// we include some details about the transaction, to make it easier to find the leak
+			"start_index", startIndex,
+			"updated_keys", slices.Collect(maps.Keys(updates)),
+			"read_keys", slices.Collect(maps.Keys(reads)),
+			"listed_keys", slices.Collect(maps.Keys(lists)),
+			"writeable", writable,
+		)
+
+		if writable {
+			b.fsm.fastTxnTracker.completeTransaction(startIndex)
+			lowestActiveIndex := b.fsm.fastTxnTracker.lowestActiveIndex()
+
+			b.l.RLock()
+			lowestActiveIndex = min(lowestActiveIndex, b.raft.AppliedIndex()) // we need to cap the lowest active index, otherwise we might miss transaction started later
+			b.l.RUnlock()
+
+			b.fsm.fastTxnTracker.clearOldEntries(lowestActiveIndex)
+		}
+
+		b.fsm.l.RUnlock()
+		b.txnPermitPool.Release()
+
+		_ = tx.Rollback() // ignore the error, not much we can do about this
+	}, index)
+
+	return txn, nil
 }
 
 func (t *RaftTransaction) Put(ctx context.Context, entry *physical.Entry) error {
@@ -615,6 +662,8 @@ func (t *RaftTransaction) Commit(ctx context.Context) error {
 		return physical.ErrTransactionAlreadyCommitted
 	}
 
+	t.cleanup.Stop()
+
 	commitRuntimeStart := time.Now()
 
 	// The transaction is done; release the permit pool entry now that we're
@@ -624,6 +673,10 @@ func (t *RaftTransaction) Commit(ctx context.Context) error {
 	defer func() {
 		if t.writable {
 			t.b.fsm.fastTxnTracker.completeTransaction(t.index)
+
+			// in "Rollback" we call fastTxnTracker.clearOldEntries(...) at this
+			// We don't do this in "Commit" because it will be called from the fsm.
+			// This ensures the cleanup also happens on standby nodes
 		}
 
 		t.b.fsm.l.RUnlock()
@@ -672,6 +725,8 @@ func (t *RaftTransaction) Commit(ctx context.Context) error {
 		// is a good approximation as to the size of the operation log and
 		// saves us from continually allocating in future appends.
 		Operations: make([]*LogOperation, 0, 2+len(t.reads)+len(t.lists)+len(t.updates)),
+
+		LowestActiveIndex: pointerutil.Ptr(t.b.fsm.fastTxnTracker.lowestActiveIndexAfterCommit(t.index)),
 	}
 	log.Operations = append(log.Operations, &LogOperation{
 		OpType: beginTxOp,
@@ -729,6 +784,8 @@ func (t *RaftTransaction) Rollback(ctx context.Context) error {
 		return physical.ErrTransactionAlreadyCommitted
 	}
 
+	t.cleanup.Stop()
+
 	// The transaction is done; release the permit pool entry when we're done
 	// here.
 	//
@@ -736,6 +793,13 @@ func (t *RaftTransaction) Rollback(ctx context.Context) error {
 	defer func() {
 		if t.writable {
 			t.b.fsm.fastTxnTracker.completeTransaction(t.index)
+			lowestActiveIndex := t.b.fsm.fastTxnTracker.lowestActiveIndex()
+
+			t.b.l.RLock()
+			lowestActiveIndex = min(lowestActiveIndex, t.b.raft.AppliedIndex()) // we need to cap the lowest active index, otherwise we might miss transaction started later
+			t.b.l.RUnlock()
+
+			t.b.fsm.fastTxnTracker.clearOldEntries(lowestActiveIndex)
 		}
 
 		t.b.fsm.l.RUnlock()
@@ -790,6 +854,38 @@ func FsmTxnCommitIndexTracker() *fsmTxnCommitIndexTracker {
 	}
 }
 
+// lowestActiveIndexAfterCommit returns what will be the lowest starting index
+// of among active transactions after the given transaction has been committed
+// (or rolled-back).
+func (t *fsmTxnCommitIndexTracker) lowestActiveIndexAfterCommit(transactionStartIndex uint64) uint64 {
+	t.l.Lock()
+	defer t.l.Unlock()
+
+	lowestActiveIndex := uint64(math.MaxUint64)
+	for index, activeCount := range t.sourceIndexMap {
+		if index == transactionStartIndex && activeCount == 1 { // ignore given transaction, iff it is the only transaction at this index
+			continue
+		}
+		lowestActiveIndex = min(lowestActiveIndex, index)
+	}
+	return lowestActiveIndex
+}
+
+// lowestActiveIndex returns the lowest starting index of among active
+// transactions.
+func (t *fsmTxnCommitIndexTracker) lowestActiveIndex() uint64 {
+	return t.lowestActiveIndexAfterCommit(uint64(math.MaxUint64))
+}
+
+func (t *fsmTxnCommitIndexTracker) clearOldEntries(lowestActiveIndex uint64) {
+	t.l.Lock()
+	defer t.l.Unlock()
+
+	maps.DeleteFunc(t.indexModifiedMap, func(key uint64, _ map[string]struct{}) bool {
+		return key < lowestActiveIndex
+	})
+}
+
 func (t *fsmTxnCommitIndexTracker) trackTransaction(index uint64) {
 	t.l.Lock()
 	defer t.l.Unlock()
@@ -806,33 +902,6 @@ func (t *fsmTxnCommitIndexTracker) completeTransaction(index uint64) {
 		t.sourceIndexMap[index] -= 1
 	} else {
 		delete(t.sourceIndexMap, index)
-	}
-
-	if existing == 1 {
-		// See if we invalidated the smallest entry; if so, find the next
-		// smallest entry and invalidate all earlier indexModifiedMap
-		// entries as a result.
-		minIndex := index
-		for key := range t.sourceIndexMap {
-			if key < minIndex {
-				minIndex = key
-			}
-		}
-
-		if minIndex < index {
-			return
-		}
-
-		deletedIndices := make([]uint64, 0, physical.DefaultParallelTransactions/2)
-		for key := range t.indexModifiedMap {
-			if key <= minIndex {
-				deletedIndices = append(deletedIndices, key)
-			}
-		}
-
-		for _, index := range deletedIndices {
-			delete(t.indexModifiedMap, index)
-		}
 	}
 }
 

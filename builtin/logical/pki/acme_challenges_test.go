@@ -126,7 +126,7 @@ func TestAcmeValidateHTTP01Challenge(t *testing.T) {
 		}
 		withRedirect := func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, "/.well-known/") {
-				http.Redirect(w, r, "/my-http-01-challenge-response", 301)
+				http.Redirect(w, r, "/my-http-01-challenge-response", http.StatusMovedPermanently)
 				return
 			}
 
@@ -165,10 +165,10 @@ func TestAcmeValidateHTTP01Challenge(t *testing.T) {
 
 	// Negative test cases for various HTTP-specific scenarios.
 	redirectLoop := func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/my-http-01-challenge-response", 301)
+		http.Redirect(w, r, "/my-http-01-challenge-response", http.StatusMovedPermanently)
 	}
 	publicRedirect := func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "http://hashicorp.com/", 301)
+		http.Redirect(w, r, "http://hashicorp.com/", http.StatusMovedPermanently)
 	}
 	noData := func(w http.ResponseWriter, r *http.Request) {}
 	noContent := func(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +182,7 @@ func TestAcmeValidateHTTP01Challenge(t *testing.T) {
 		w.Write([]byte("my-token.my-thumbprint"))
 	}
 	tooLarge := func(w http.ResponseWriter, r *http.Request) {
-		for i := 0; i < 512; i++ {
+		for range 512 {
 			w.Write([]byte("my-token.my-thumbprint\n"))
 		}
 	}
@@ -254,10 +254,10 @@ func TestAcmeValidateTLSALPN01Challenge(t *testing.T) {
 
 	tlsCfg := &tls.Config{}
 	tlsCfg.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
-		var retCfg tls.Config = *tlsCfg
+		retCfg := tlsCfg.Clone()
 		retCfg.NextProtos = returnedProtocols
 		log.Info(fmt.Sprintf("[alpn-server] returned protocol: %v", returnedProtocols))
-		return &retCfg, nil
+		return retCfg, nil
 	}
 	tlsCfg.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		var ret tls.Certificate
@@ -283,7 +283,7 @@ func TestAcmeValidateTLSALPN01Challenge(t *testing.T) {
 		log.Info("[alpn-server] got connection...")
 		conn := tls.Server(connRaw.(*tls.Conn), tlsCfg)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Minute)
 		defer func() {
 			log.Info("[alpn-server] canceling listener connection...")
 			cancel()
@@ -740,7 +740,7 @@ func TestAcmeValidateHttp01TLSRedirect(t *testing.T) {
 
 			// Set up a http server that will redirect to our TLS server
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				http.Redirect(w, r, tlsTs.URL+r.URL.Path, 301)
+				http.Redirect(w, r, tlsTs.URL+r.URL.Path, http.StatusMovedPermanently)
 			}))
 			defer ts.Close()
 

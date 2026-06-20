@@ -232,7 +232,7 @@ quota exists. Can only be set on namespace quotas. A quota on the root namespace
 
 func (b *SystemBackend) handleQuotasConfigUpdate() framework.OperationFunc {
 	return func(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-		config, err := quotas.LoadConfig(ctx, b.Core.systemBarrierView)
+		config, err := b.Core.quotaManager.LoadConfig(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -310,7 +310,7 @@ func (b *SystemBackend) handleRateLimitQuotasUpdate() framework.OperationFunc {
 		}
 
 		mountPath := sanitizePath(d.Get("path").(string))
-		ns, mountPath := b.Core.NamespaceByPath(ctx, mountPath)
+		ns, mountPath := b.Core.namespaceStore.GetNamespaceByLongestPrefix(ctx, mountPath)
 
 		var pathSuffix string
 		if mountPath != "" {
@@ -368,8 +368,8 @@ func (b *SystemBackend) handleRateLimitQuotasUpdate() framework.OperationFunc {
 			inheritable = true
 		}
 
-		switch {
-		case quota == nil:
+		switch quota {
+		case nil:
 			quota = quotas.NewRateLimitQuota(name, ns.Path, mountPath, pathSuffix, role, rate, interval, blockInterval, inheritable)
 		default:
 			// Re-inserting the already indexed object in memdb might cause problems.
@@ -395,7 +395,7 @@ func (b *SystemBackend) handleRateLimitQuotasUpdate() framework.OperationFunc {
 			return nil, err
 		}
 
-		if err := b.Core.quotaManager.SetQuota(ctx, qType, quota, false); err != nil {
+		if err := b.Core.quotaManager.SetQuota(ctx, qType, quota); err != nil {
 			return nil, err
 		}
 

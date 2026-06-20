@@ -1,0 +1,143 @@
+---
+layout: docs
+description: The "namespace" command groups subcommands for interacting with namespaces.
+---
+
+# namespace
+
+The `namespace` command groups subcommands for interacting with namespaces.
+
+## Examples
+
+List all namespaces:
+
+```shell-session
+$ bao namespace list
+```
+
+List all namespaces with additional details such as namespace ID and custom metadata:
+
+```shell-session
+$ bao namespace list -detailed
+```
+
+Recursively list (scan) all namespaces:
+
+```shell-session
+$ bao namespace scan
+```
+
+Recursively list (scan) all namespaces with additional details such as namespace ID and custom metadata:
+
+```shell-session
+$ bao namespace scan -detailed
+```
+
+Create a namespace at the path `ns1/` with no custom metadata:
+
+```shell-session
+$ bao namespace create ns1/
+```
+
+Create a namespace at the path `ns1/` with multiple custom metadata keys:
+
+```shell-session
+$ bao namespace create -custom-metadata=foo=abc -custom-metadata=bar=123 ns1/
+```
+
+Patch an existing namespace at the path `ns1/` to add custom metadata key `bar` and remove key `foo`
+
+```shell-session
+$ bao namespace patch -custom-metadata=bar=123 -remove-custom-metadata=foo ns1/
+```
+
+Delete the namespace at path `ns1/`:
+
+```shell-session
+$ bao namespace delete ns1/
+```
+
+Delete a sealed namespace with no child namespaces (requires sudo):
+
+```shell-session
+$ bao namespace delete-sealed ns1
+```
+
+Delete a sealed namespace and recursively wipe its child namespaces (requires sudo):
+
+```shell-session
+$ bao namespace delete-sealed -force ns1
+```
+
+Lookup the namespace information at path `ns1/`:
+
+```shell-session
+$ bao namespace lookup ns1/
+```
+
+Lock the API for the current namespace:
+
+```shell-session
+$ bao namespace lock
+```
+
+Lock the API for a descendant namespace at path `current/namespace/ns1/`:
+
+```shell-session
+$ bao namespace lock ns1/
+```
+
+Unlock the API for the current namespace:
+
+```shell-session
+$ bao namespace unlock -unlock-key <unlock key>
+```
+
+Unlock the API for a descendant namespace at path `current/namespacens1/`:
+
+```shell-session
+$ bao namespace unlock -unlock-key <unlock key> ns1/
+```
+
+Seal the namespace:  
+
+```shell-session
+$ bao namespace seal
+```
+
+Unseal the namespace:
+
+```shell-session
+$ bao namespace unseal
+```
+
+Retrieve the namespace seal status:
+
+```shell-session
+$ bao namespace seal-status
+```
+
+## Usage
+
+```text
+Usage: bao namespace <subcommand> [options] [args]
+
+  This command groups subcommands for interacting with OpenBao namespaces.
+
+Subcommands:
+    create         Create a new namespace
+    delete         Delete an existing namespace
+    delete-sealed  Delete a sealed namespace
+    list           List child namespaces
+    lock           Lock the API for particular namespaces
+    lookup         Look up an existing namespace
+    patch          Patch an existing namespace
+    scan           List all (child) namespaces recursively
+    seal           Seals the namespace
+    seal-status    Prints the namespace seal status
+    unlock         Unlock the API for particular namespaces
+    unseal         Unseals the namespace
+```
+
+For more information, examples, and usage about a subcommand, click on the name
+of the subcommand in the sidebar.

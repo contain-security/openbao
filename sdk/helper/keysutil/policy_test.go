@@ -27,6 +27,8 @@ import (
 	"github.com/openbao/openbao/sdk/v2/helper/errutil"
 	"github.com/openbao/openbao/sdk/v2/helper/jsonutil"
 	"github.com/openbao/openbao/sdk/v2/logical"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPolicy_KeyEntryMapUpgrade(t *testing.T) {
@@ -75,7 +77,7 @@ func Test_KeyUpgrade(t *testing.T) {
 }
 
 func testKeyUpgradeCommon(t *testing.T, lm *LockManager) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	storage := &logical.InmemStorage{}
 	p, upserted, err := lm.GetPolicy(ctx, PolicyRequest{
@@ -93,9 +95,7 @@ func testKeyUpgradeCommon(t *testing.T, lm *LockManager) {
 	if !upserted {
 		t.Fatal("expected an upsert")
 	}
-	if !lm.useCache {
-		p.Unlock()
-	}
+	defer p.Unlock()
 
 	testBytes := make([]byte, len(p.Keys["1"].Key))
 	copy(testBytes, p.Keys["1"].Key)
@@ -122,7 +122,7 @@ func Test_ArchivingUpgrade(t *testing.T) {
 }
 
 func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// First, we generate a policy and rotate it a number of times. Each time
 	// we'll ensure that we have the expected number of keys in the archive and
@@ -142,9 +142,7 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 	if p == nil {
 		t.Fatal("nil policy")
 	}
-	if !lm.useCache {
-		p.Unlock()
-	}
+	p.Unlock()
 
 	// Store the initial key in the archive
 	keysArchive := []KeyEntry{{}, p.Keys["1"]}
@@ -199,9 +197,7 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 	if p == nil {
 		t.Fatal("nil policy")
 	}
-	if !lm.useCache {
-		p.Unlock()
-	}
+	p.Unlock()
 
 	checkKeys(t, ctx, p, storage, keysArchive, "upgrade", 10, 10, 10)
 
@@ -239,9 +235,7 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 	if p == nil {
 		t.Fatal("policy nil after bad delete")
 	}
-	if !lm.useCache {
-		p.Unlock()
-	}
+	p.Unlock()
 
 	// Now do it properly
 	p.DeletionAllowed = true
@@ -279,83 +273,6 @@ func Test_Archiving(t *testing.T) {
 	lockManagerWithoutCache, _ := NewLockManager(false, 0)
 	testArchivingUpgradeCommon(t, lockManagerWithCache)
 	testArchivingUpgradeCommon(t, lockManagerWithoutCache)
-}
-
-func testArchivingCommon(t *testing.T, lm *LockManager) {
-	ctx := context.Background()
-
-	// First, we generate a policy and rotate it a number of times. Each time
-	// we'll ensure that we have the expected number of keys in the archive and
-	// the main keys object, which without changing the min version should be
-	// zero and latest, respectively
-
-	storage := &logical.InmemStorage{}
-	p, _, err := lm.GetPolicy(ctx, PolicyRequest{
-		Upsert:  true,
-		Storage: storage,
-		KeyType: KeyType_AES256_GCM96,
-		Name:    "test",
-	}, rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p == nil {
-		t.Fatal("nil policy")
-	}
-	if !lm.useCache {
-		p.Unlock()
-	}
-
-	// Store the initial key in the archive
-	keysArchive := []KeyEntry{{}, p.Keys["1"]}
-	checkKeys(t, ctx, p, storage, keysArchive, "initial", 1, 1, 1)
-
-	for i := 2; i <= 10; i++ {
-		err = p.Rotate(ctx, storage, rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		keysArchive = append(keysArchive, p.Keys[strconv.Itoa(i)])
-		checkKeys(t, ctx, p, storage, keysArchive, "rotate", i, i, i)
-	}
-
-	// Move the min decryption version up
-	for i := 1; i <= 10; i++ {
-		p.MinDecryptionVersion = i
-
-		err = p.Persist(ctx, storage)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// We expect to find:
-		// * The keys in archive are the same as the latest version
-		// * The latest version is constant
-		// * The number of keys in the policy itself is from the min
-		// decryption version up to the latest version, so for e.g. 7 and
-		// 10, you'd need 7, 8, 9, and 10 -- IOW, latest version - min
-		// decryption version plus 1 (the min decryption version key
-		// itself)
-		checkKeys(t, ctx, p, storage, keysArchive, "minadd", 10, 10, p.LatestVersion-p.MinDecryptionVersion+1)
-	}
-
-	// Move the min decryption version down
-	for i := 10; i >= 1; i-- {
-		p.MinDecryptionVersion = i
-
-		err = p.Persist(ctx, storage)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// We expect to find:
-		// * The keys in archive are never removed so same as the latest version
-		// * The latest version is constant
-		// * The number of keys in the policy itself is from the min
-		// decryption version up to the latest version, so for e.g. 7 and
-		// 10, you'd need 7, 8, 9, and 10 -- IOW, latest version - min
-		// decryption version plus 1 (the min decryption version key
-		// itself)
-		checkKeys(t, ctx, p, storage, keysArchive, "minsub", 10, 10, p.LatestVersion-p.MinDecryptionVersion+1)
-	}
 }
 
 func checkKeys(t *testing.T,
@@ -440,7 +357,7 @@ func checkKeys(t *testing.T,
 }
 
 func Test_StorageErrorSafety(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	lm, _ := NewLockManager(true, 0)
 
 	storage := &logical.InmemStorage{}
@@ -472,9 +389,7 @@ func Test_StorageErrorSafety(t *testing.T) {
 		checkKeys(t, ctx, p, storage, keysArchive, "rotate", i, i, i)
 	}
 
-	underlying := storage.Underlying()
-	underlying.FailPut(true)
-
+	storage.Underlying().FailPut(true)
 	priorLen := len(p.Keys)
 
 	err = p.Rotate(ctx, storage, rand.Reader)
@@ -488,7 +403,7 @@ func Test_StorageErrorSafety(t *testing.T) {
 }
 
 func Test_BadUpgrade(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	lm, _ := NewLockManager(true, 0)
 	storage := &logical.InmemStorage{}
 	p, _, err := lm.GetPolicy(ctx, PolicyRequest{
@@ -530,8 +445,7 @@ func Test_BadUpgrade(t *testing.T) {
 	}
 
 	// Do it again with a failing storage call
-	underlying := storage.Underlying()
-	underlying.FailPut(true)
+	storage.Underlying().FailPut(true)
 
 	p.Key = p.Keys["1"].Key
 	p.Keys = nil
@@ -553,7 +467,7 @@ func Test_BadUpgrade(t *testing.T) {
 }
 
 func Test_BadArchive(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	lm, _ := NewLockManager(true, 0)
 	storage := &logical.InmemStorage{}
 	p, _, err := lm.GetPolicy(ctx, PolicyRequest{
@@ -611,8 +525,7 @@ func Test_BadArchive(t *testing.T) {
 		t.Fatalf("unexpected key length %d", len(p.Keys))
 	}
 
-	underlying := storage.Underlying()
-	underlying.FailPut(true)
+	storage.Underlying().FailPut(true)
 
 	// Set back, which should cause p.Keys to be changed if the persist works,
 	// but it doesn't
@@ -630,7 +543,7 @@ func Test_BadArchive(t *testing.T) {
 }
 
 func Test_Import(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	storage := &logical.InmemStorage{}
 	testKeys, err := generateTestKeys()
 	if err != nil {
@@ -757,7 +670,7 @@ func generateTestKeys() (map[KeyType][]byte, error) {
 }
 
 func BenchmarkSymmetric(b *testing.B) {
-	ctx := context.Background()
+	ctx := b.Context()
 	lm, _ := NewLockManager(true, 0)
 	storage := &logical.InmemStorage{}
 	p, _, _ := lm.GetPolicy(ctx, PolicyRequest{
@@ -824,7 +737,7 @@ func Test_RSA_PSS(t *testing.T) {
 	t.Log("Testing RSA PSS")
 
 	var userError errutil.UserError
-	ctx := context.Background()
+	ctx := t.Context()
 	storage := &logical.InmemStorage{}
 	// https://crypto.stackexchange.com/a/1222
 	input := []byte("the ancients say the longer the salt, the more provable the security")
@@ -972,7 +885,7 @@ func Test_RSA_PSS(t *testing.T) {
 func Test_RSA_PKCS1(t *testing.T) {
 	t.Log("Testing RSA PKCS#1v1.5")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	storage := &logical.InmemStorage{}
 	// https://crypto.stackexchange.com/a/1222
 	input := []byte("Sphinx of black quartz, judge my vow")
@@ -1065,4 +978,138 @@ func isUnsupportedGoHashType(hashType HashType, err error) bool {
 	}
 
 	return false
+}
+
+func TestKeyType_CapabilitiesAndString(t *testing.T) {
+	cases := []struct {
+		kt                               KeyType
+		wantEnc, wantDec, wantSign       bool
+		wantHashSig, wantDeriv           bool
+		wantKeyAgree, wantAssoc, wantImp bool
+		wantStr                          string
+	}{
+		// --- Symmetric Ciphers ---
+		{
+			kt:      KeyType_AES128_GCM96,
+			wantEnc: true, wantDec: true,
+			wantSign:    false,
+			wantHashSig: false, wantDeriv: true,
+			wantKeyAgree: false, wantAssoc: true, wantImp: false,
+			wantStr: "aes128-gcm96",
+		},
+		{
+			kt:      KeyType_AES256_GCM96,
+			wantEnc: true, wantDec: true,
+			wantSign:    false,
+			wantHashSig: false, wantDeriv: true,
+			wantKeyAgree: false, wantAssoc: true, wantImp: false,
+			wantStr: "aes256-gcm96",
+		},
+		{
+			kt:      KeyType_ChaCha20_Poly1305,
+			wantEnc: true, wantDec: true,
+			wantSign:    false,
+			wantHashSig: false, wantDeriv: true,
+			wantKeyAgree: false, wantAssoc: true, wantImp: false,
+			wantStr: "chacha20-poly1305",
+		},
+		{
+			kt:      KeyType_XChaCha20_Poly1305,
+			wantEnc: true, wantDec: true,
+			wantSign:    false,
+			wantHashSig: false, wantDeriv: true,
+			wantKeyAgree: false, wantAssoc: true, wantImp: false,
+			wantStr: "xchacha20-poly1305",
+		},
+		// --- ECDSA / ED25519 ---
+		{
+			kt:      KeyType_ECDSA_P256,
+			wantEnc: false, wantDec: false,
+			wantSign:    true,
+			wantHashSig: true, wantDeriv: false,
+			wantKeyAgree: true, wantAssoc: false, wantImp: true,
+			wantStr: "ecdsa-p256",
+		},
+		{
+			kt:      KeyType_ECDSA_P384,
+			wantEnc: false, wantDec: false,
+			wantSign:    true,
+			wantHashSig: true, wantDeriv: false,
+			wantKeyAgree: true, wantAssoc: false, wantImp: true,
+			wantStr: "ecdsa-p384",
+		},
+		{
+			kt:      KeyType_ECDSA_P521,
+			wantEnc: false, wantDec: false,
+			wantSign:    true,
+			wantHashSig: true, wantDeriv: false,
+			wantKeyAgree: true, wantAssoc: false, wantImp: true,
+			wantStr: "ecdsa-p521",
+		},
+		{
+			kt:      KeyType_ED25519,
+			wantEnc: false, wantDec: false,
+			wantSign:    true,
+			wantHashSig: false, wantDeriv: true,
+			wantKeyAgree: false, wantAssoc: false, wantImp: true,
+			wantStr: "ed25519",
+		},
+		// --- RSA ---
+		{
+			kt:      KeyType_RSA2048,
+			wantEnc: true, wantDec: true,
+			wantSign:    true,
+			wantHashSig: true, wantDeriv: false,
+			wantKeyAgree: false, wantAssoc: false, wantImp: true,
+			wantStr: "rsa-2048",
+		},
+		{
+			kt:      KeyType_RSA3072,
+			wantEnc: true, wantDec: true,
+			wantSign:    true,
+			wantHashSig: true, wantDeriv: false,
+			wantKeyAgree: false, wantAssoc: false, wantImp: true,
+			wantStr: "rsa-3072",
+		},
+		{
+			kt:      KeyType_RSA4096,
+			wantEnc: true, wantDec: true,
+			wantSign:    true,
+			wantHashSig: true, wantDeriv: false,
+			wantKeyAgree: false, wantAssoc: false, wantImp: true,
+			wantStr: "rsa-4096",
+		},
+		// --- HMAC ---
+		{
+			kt:      KeyType_HMAC,
+			wantEnc: false, wantDec: false,
+			wantSign:    false,
+			wantHashSig: false, wantDeriv: false,
+			wantKeyAgree: false, wantAssoc: false, wantImp: false,
+			wantStr: "hmac",
+		},
+		// -- Unknown ---
+		{
+			kt:      KeyType(999),
+			wantEnc: false, wantDec: false,
+			wantSign:    false,
+			wantHashSig: false, wantDeriv: false,
+			wantKeyAgree: false, wantAssoc: false, wantImp: false,
+			wantStr: "[unknown]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kt.String(), func(t *testing.T) {
+			require.Equal(t, tc.wantEnc, tc.kt.EncryptionSupported())
+			require.Equal(t, tc.wantDec, tc.kt.DecryptionSupported())
+			require.Equal(t, tc.wantSign, tc.kt.SigningSupported())
+			require.Equal(t, tc.wantHashSig, tc.kt.HashSignatureInput())
+			require.Equal(t, tc.wantDeriv, tc.kt.DerivationSupported())
+			require.Equal(t, tc.wantKeyAgree, tc.kt.KeyAgreementSupported())
+			require.Equal(t, tc.wantAssoc, tc.kt.AssociatedDataSupported())
+			require.Equal(t, tc.wantImp, tc.kt.ImportPublicKeySupported())
+			require.Equal(t, tc.wantStr, tc.kt.String())
+			require.Equal(t, tc.kt.EncryptionSupported(), tc.kt.DecryptionSupported(), "Encryption/Decryption support mismatch for %v", tc.kt)
+		})
+	}
 }

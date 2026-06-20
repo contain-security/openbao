@@ -8,11 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/armon/go-metrics"
-	"github.com/hashicorp/go-secure-stdlib/strutil"
+	metrics "github.com/hashicorp/go-metrics/compat"
 	"github.com/hashicorp/raft"
 	autopilot "github.com/hashicorp/raft-autopilot"
 	"github.com/openbao/openbao/sdk/v2/physical"
@@ -138,7 +138,12 @@ func (d *Delegate) KnownServers() map[raft.ServerID]*autopilot.Server {
 		return nil
 	}
 
-	apServerStates := d.autopilot.GetState().Servers
+	var apServerStates map[raft.ServerID]*autopilot.ServerState
+	if d.autopilot != nil {
+		if state := d.autopilot.GetState(); state != nil {
+			apServerStates = state.Servers
+		}
+	}
 	servers := future.Configuration().Servers
 	serverIDs := make([]string, 0, len(servers))
 	for _, server := range servers {
@@ -152,7 +157,7 @@ func (d *Delegate) KnownServers() map[raft.ServerID]*autopilot.Server {
 	for id, state := range d.followerStates.followers {
 		// If the server is not in raft configuration, even if we received a follower
 		// heartbeat, it shouldn't be a known server for autopilot.
-		if !strutil.StrListContains(serverIDs, id) {
+		if !slices.Contains(serverIDs, id) {
 			continue
 		}
 

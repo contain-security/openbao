@@ -43,6 +43,13 @@ var caddyConfigTemplateHTTPEAB string
 //go:embed testdata/caddy_tls_alpn.json
 var caddyConfigTemplateTLSALPN string
 
+func generateRandomId(t *testing.T) string {
+	runID, err := uuid.GenerateUUID()
+	require.NoError(t, err, "failed to generate a unique ID for test run")
+
+	return strings.Split(runID, "-")[0]
+}
+
 // Test_ACME will start a Vault cluster using the docker based binary, and execute
 // a bunch of sub-tests against that cluster. It is up to each sub-test to run/configure
 // a new pki mount within the cluster to not interfere with each other.
@@ -93,12 +100,10 @@ type caddyConfig struct {
 // SubtestACMECaddy returns an ACME test for Caddy using the provided template.
 func SubtestACMECaddy(configTemplate string, enableEAB bool) func(*testing.T, *VaultPkiCluster) {
 	return func(t *testing.T, cluster *VaultPkiCluster) {
-		ctx := context.Background()
+		ctx := t.Context()
 
 		// Roll a random run ID for mount and hostname uniqueness.
-		runID, err := uuid.GenerateUUID()
-		require.NoError(t, err, "failed to generate a unique ID for test run")
-		runID = strings.Split(runID, "-")[0]
+		runID := generateRandomId(t)
 
 		// Create the PKI mount with ACME enabled
 		pki, err := cluster.CreateAcmeMount(runID)
@@ -272,12 +277,14 @@ func SubtestACMECertbot(t *testing.T, cluster *VaultPkiCluster) {
 	})
 	require.NoError(t, err, "failed creating service runner")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	result, err := runner.Start(ctx, true, false)
 	require.NoError(t, err, "could not start container")
 	require.NotNil(t, result, "could not start container")
 
-	defer runner.Stop(context.Background(), result.Container.ID)
+	defer func() {
+		_ = runner.Stop(ctx, result.Container.ID)
+	}()
 
 	networks, err := runner.GetNetworkAndAddresses(result.Container.ID)
 	require.NoError(t, err, "could not read container's IP address")
@@ -443,6 +450,7 @@ func SubtestACMECertbotEab(t *testing.T, cluster *VaultPkiCluster) {
 	require.NoError(t, err)
 
 	eabId, base64EabKey, err := pki.GetEabKey("acme/")
+	require.NoError(t, err)
 
 	directory := "https://" + pki.GetActiveContainerIP() + ":8200/v1/" + mountName + "/acme/directory"
 	vaultNetwork := pki.GetContainerNetworkName()
@@ -462,12 +470,14 @@ func SubtestACMECertbotEab(t *testing.T, cluster *VaultPkiCluster) {
 	})
 	require.NoError(t, err, "failed creating service runner")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	result, err := runner.Start(ctx, true, false)
 	require.NoError(t, err, "could not start container")
 	require.NotNil(t, result, "could not start container")
 
-	defer runner.Stop(context.Background(), result.Container.ID)
+	defer func() {
+		_ = runner.Stop(ctx, result.Container.ID)
+	}()
 
 	networks, err := runner.GetNetworkAndAddresses(result.Container.ID)
 	require.NoError(t, err, "could not read container's IP address")
@@ -562,7 +572,7 @@ func SubtestACMECertbotEab(t *testing.T, cluster *VaultPkiCluster) {
 }
 
 func SubtestACMEIPAndDNS(t *testing.T, cluster *VaultPkiCluster) {
-	pki, err := cluster.CreateAcmeMount("pki-ip-dns-sans")
+	pki, err := cluster.CreateAcmeMount(fmt.Sprintf("pki-ip-dns-sans-%s", generateRandomId(t)))
 	require.NoError(t, err, "failed setting up acme mount")
 
 	// Since we interact with ACME from outside the container network the ACME
@@ -585,14 +595,18 @@ func SubtestACMEIPAndDNS(t *testing.T, cluster *VaultPkiCluster) {
 	})
 	require.NoError(t, err, "failed creating service runner")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	result, err := runner.Start(ctx, true, false)
 	require.NoError(t, err, "could not start container")
 	require.NotNil(t, result, "could not start container")
 
 	nginxContainerId := result.Container.ID
-	defer runner.Stop(context.Background(), nginxContainerId)
+	defer func() {
+		_ = runner.Stop(ctx, nginxContainerId)
+	}()
+
 	networks, err := runner.GetNetworkAndAddresses(nginxContainerId)
+	require.NoError(t, err)
 
 	challengeFolder := "/usr/share/nginx/html/.well-known/acme-challenge/"
 	createChallengeFolderCmd := []string{
@@ -605,7 +619,7 @@ func SubtestACMEIPAndDNS(t *testing.T, cluster *VaultPkiCluster) {
 	require.Equal(t, 0, retcode, "expected zero retcode from mkdir in nginx container")
 
 	ipAddr := networks[pki.GetContainerNetworkName()]
-	hostname := "go-lang-acme-client.dadgarcorp.com"
+	hostname := fmt.Sprintf("go-lang-acme-client.%s.dadgarcorp.com", generateRandomId(t))
 
 	err = pki.AddHostname(hostname, ipAddr)
 	require.NoError(t, err, "failed to update vault host files")
@@ -717,7 +731,7 @@ func doAcmeValidationWithGoLibrary(t *testing.T, directoryUrl string, acmeOrderI
 		DirectoryURL: directoryUrl,
 	}
 
-	testCtx, cancelFunc := context.WithTimeout(context.Background(), 2*time.Minute)
+	testCtx, cancelFunc := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancelFunc()
 
 	// Create new account
@@ -752,6 +766,7 @@ func doAcmeValidationWithGoLibrary(t *testing.T, directoryUrl string, acmeOrderI
 
 	// Create/sign the CSR and ask ACME server to sign it returning us the final certificate
 	csrKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err, "failed generating csr key")
 	csr, err := x509.CreateCertificateRequest(rand.Reader, cr, csrKey)
 	require.NoError(t, err, "failed generating csr")
 
@@ -776,7 +791,7 @@ func doAcmeValidationWithGoLibrary(t *testing.T, directoryUrl string, acmeOrderI
 }
 
 func SubtestACMEWildcardDNS(t *testing.T, cluster *VaultPkiCluster) {
-	pki, err := cluster.CreateAcmeMount("pki-dns-wildcards")
+	pki, err := cluster.CreateAcmeMount(fmt.Sprintf("pki-dns-wildcards-%s", generateRandomId(t)))
 	require.NoError(t, err, "failed setting up acme mount")
 
 	// Since we interact with ACME from outside the container network the ACME
@@ -785,7 +800,7 @@ func SubtestACMEWildcardDNS(t *testing.T, cluster *VaultPkiCluster) {
 	basePath, err := pki.UpdateClusterConfigLocalAddr()
 	require.NoError(t, err, "failed updating cluster config")
 
-	hostname := "go-lang-wildcard-client.dadgarcorp.com"
+	hostname := fmt.Sprintf("go-lang-wildcard-client.%s.dadgarcorp.com", generateRandomId(t))
 	wildcard := "*." + hostname
 
 	// Do validation without a role first.
@@ -834,7 +849,7 @@ func SubtestACMEWildcardDNS(t *testing.T, cluster *VaultPkiCluster) {
 	// Redo validation with a role this time.
 	err = pki.UpdateRole("wildcard", map[string]interface{}{
 		"key_type":                    "any",
-		"allowed_domains":             "go-lang-wildcard-client.dadgarcorp.com",
+		"allowed_domains":             hostname,
 		"allow_subdomains":            true,
 		"allow_bare_domains":          true,
 		"allow_wildcard_certificates": true,
@@ -851,7 +866,7 @@ func SubtestACMEWildcardDNS(t *testing.T, cluster *VaultPkiCluster) {
 }
 
 func SubtestACMEPreventsICADNS(t *testing.T, cluster *VaultPkiCluster) {
-	pki, err := cluster.CreateAcmeMount("pki-dns-ica")
+	pki, err := cluster.CreateAcmeMount(fmt.Sprintf("pki-dns-ica-%s", generateRandomId(t)))
 	require.NoError(t, err, "failed setting up acme mount")
 
 	// Since we interact with ACME from outside the container network the ACME
@@ -860,7 +875,7 @@ func SubtestACMEPreventsICADNS(t *testing.T, cluster *VaultPkiCluster) {
 	basePath, err := pki.UpdateClusterConfigLocalAddr()
 	require.NoError(t, err, "failed updating cluster config")
 
-	hostname := "go-lang-intermediate-ca-cert.dadgarcorp.com"
+	hostname := fmt.Sprintf("go-lang-intermediate-ca-cert.%s.dadgarcorp.com", generateRandomId(t))
 
 	// Do validation without a role first.
 	directoryUrl := basePath + "/acme/directory"
@@ -912,7 +927,7 @@ func SubtestACMEPreventsICADNS(t *testing.T, cluster *VaultPkiCluster) {
 	// Redo validation with a role this time.
 	err = pki.UpdateRole("ica", map[string]interface{}{
 		"key_type":                    "any",
-		"allowed_domains":             "go-lang-intermediate-ca-cert.dadgarcorp.com",
+		"allowed_domains":             hostname,
 		"allow_subdomains":            true,
 		"allow_bare_domains":          true,
 		"allow_wildcard_certificates": true,
@@ -945,8 +960,9 @@ func SubtestACMEStepDownNode(t *testing.T, cluster *VaultPkiCluster) {
 	err = pki.UpdateClusterConfig(map[string]interface{}{
 		"path": basePath,
 	})
+	require.NoError(t, err)
 
-	hostname := "go-lang-stepdown-client.dadgarcorp.com"
+	hostname := fmt.Sprintf("go-lang-stepdown-client.%s.dadgarcorp.com", generateRandomId(t))
 
 	acmeOrderIdentifiers := []acme.AuthzID{
 		{Type: "dns", Value: hostname},
@@ -966,7 +982,7 @@ func SubtestACMEStepDownNode(t *testing.T, cluster *VaultPkiCluster) {
 		DirectoryURL: basePath + "/acme/directory",
 	}
 
-	testCtx, cancelFunc := context.WithTimeout(context.Background(), 2*time.Minute)
+	testCtx, cancelFunc := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancelFunc()
 
 	// Create new account
@@ -1094,6 +1110,7 @@ func SubtestACMEStepDownNode(t *testing.T, cluster *VaultPkiCluster) {
 
 	// Create/sign the CSR and ask ACME server to sign it returning us the final certificate
 	csrKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err, "failed generating csr key")
 	csr, err := x509.CreateCertificateRequest(rand.Reader, cr, csrKey)
 	require.NoError(t, err, "failed generating csr")
 

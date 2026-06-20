@@ -86,18 +86,18 @@ func ErrToProtoErr(e error) *ProtoError {
 		pbErr.ErrType = ErrTypeStatusBadRequest
 	}
 
-	switch {
-	case e == logical.ErrUnsupportedOperation:
+	switch e {
+	case logical.ErrUnsupportedOperation:
 		pbErr.ErrType = ErrTypeUnsupportedOperation
-	case e == logical.ErrUnsupportedPath:
+	case logical.ErrUnsupportedPath:
 		pbErr.ErrType = ErrTypeUnsupportedPath
-	case e == logical.ErrInvalidRequest:
+	case logical.ErrInvalidRequest:
 		pbErr.ErrType = ErrTypeInvalidRequest
-	case e == logical.ErrPermissionDenied:
+	case logical.ErrPermissionDenied:
 		pbErr.ErrType = ErrTypePermissionDenied
-	case e == logical.ErrMultiAuthzPending:
+	case logical.ErrMultiAuthzPending:
 		pbErr.ErrType = ErrTypeMultiAuthzPending
-	case e == logical.ErrUnrecoverable:
+	case logical.ErrUnrecoverable:
 		pbErr.ErrType = ErrTypeUnrecoverable
 	}
 
@@ -319,9 +319,11 @@ func LogicalConnectionToProtoConnection(c *logical.Connection) *Connection {
 	}
 
 	return &Connection{
-		RemoteAddr:      c.RemoteAddr,
-		RemotePort:      int32(c.RemotePort),
-		ConnectionState: TLSConnectionStateToProtoConnectionState(c.ConnState),
+		RemoteAddr:             c.RemoteAddr,
+		RemotePort:             int32(c.RemotePort),
+		ConnectionState:        TLSConnectionStateToProtoConnectionState(c.ConnState),
+		ProxiedCertificatesRaw: c.ProxiedCertificatesRaw,
+		PeerCertificatesRaw:    c.PeerCertificatesRaw,
 	}
 }
 
@@ -336,9 +338,11 @@ func ProtoConnectionToLogicalConnection(c *Connection) (*logical.Connection, err
 	}
 
 	return &logical.Connection{
-		RemoteAddr: c.RemoteAddr,
-		RemotePort: int(c.RemotePort),
-		ConnState:  cs,
+		RemoteAddr:             c.RemoteAddr,
+		RemotePort:             int(c.RemotePort),
+		ConnState:              cs,
+		ProxiedCertificatesRaw: c.ProxiedCertificatesRaw,
+		PeerCertificatesRaw:    c.PeerCertificatesRaw,
 	}, nil
 }
 

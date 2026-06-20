@@ -8,17 +8,19 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/hashicorp/errwrap"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/openbao/openbao/vault"
+	"github.com/openbao/openbao/vault/barrier"
 )
 
 func handleSysSeal(core *vault.Core) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		req, _, statusCode, err := buildLogicalRequest(core, w, r)
+		req, statusCode, err := buildLogicalRequest(core, w, r)
 		if err != nil || statusCode != 0 {
 			respondError(w, statusCode, err)
 			return
@@ -48,7 +50,7 @@ func handleSysSeal(core *vault.Core) http.Handler {
 
 func handleSysStepDown(core *vault.Core) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		req, _, statusCode, err := buildLogicalRequest(core, w, r)
+		req, statusCode, err := buildLogicalRequest(core, w, r)
 		if err != nil || statusCode != 0 {
 			respondError(w, statusCode, err)
 			return
@@ -87,7 +89,7 @@ func handleSysUnseal(core *vault.Core) http.Handler {
 
 		// Parse the request
 		var req UnsealRequest
-		if _, err := parseJSONRequest(r, w, &req); err != nil {
+		if err := parseJSONRequest(r, &req); err != nil && !errors.Is(err, io.EOF) {
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -105,7 +107,8 @@ func handleSysUnseal(core *vault.Core) http.Handler {
 		if req.Key == "" {
 			respondError(
 				w, http.StatusBadRequest,
-				errors.New("'key' must be specified in request body as JSON, or 'reset' set to true"))
+				errors.New("'key' must be specified in request body as JSON, or 'reset' set to true"),
+			)
 			return
 		}
 
@@ -120,7 +123,8 @@ func handleSysUnseal(core *vault.Core) http.Handler {
 			if err != nil {
 				respondError(
 					w, http.StatusBadRequest,
-					errors.New("'key' must be a valid hex or base64 string"))
+					errors.New("'key' must be a valid hex or base64 string"),
+				)
 				return
 			}
 		}
@@ -135,9 +139,9 @@ func handleSysUnseal(core *vault.Core) http.Handler {
 		if err != nil {
 			switch {
 			case errwrap.ContainsType(err, new(vault.ErrInvalidKey)):
-			case errwrap.Contains(err, vault.ErrBarrierInvalidKey.Error()):
-			case errwrap.Contains(err, vault.ErrBarrierNotInit.Error()):
-			case errwrap.Contains(err, vault.ErrBarrierSealed.Error()):
+			case errwrap.Contains(err, barrier.ErrBarrierInvalidKey.Error()):
+			case errwrap.Contains(err, barrier.ErrBarrierNotInit.Error()):
+			case errwrap.Contains(err, barrier.ErrBarrierSealed.Error()):
 			case errwrap.Contains(err, consts.ErrStandby.Error()):
 			default:
 				respondError(w, http.StatusInternalServerError, err)

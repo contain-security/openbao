@@ -33,9 +33,9 @@ type Client struct {
 func (c *Client) DialLDAP(cfg *ConfigEntry) (Connection, error) {
 	var retErr *multierror.Error
 	var conn Connection
-	urls := strings.Split(cfg.Url, ",")
+	urls := strings.SplitSeq(cfg.Url, ",")
 
-	for _, uut := range urls {
+	for uut := range urls {
 		u, err := url.Parse(uut)
 		if err != nil {
 			retErr = multierror.Append(retErr, fmt.Errorf("error parsing url %q: %w", uut, err))
@@ -95,9 +95,7 @@ func (c *Client) DialLDAP(cfg *ConfigEntry) (Connection, error) {
 		}
 		if err == nil {
 			if retErr != nil {
-				if c.Logger.IsDebug() {
-					c.Logger.Debug("errors connecting to some hosts", "error", retErr.Error())
-				}
+				c.Logger.Debug("errors connecting to some hosts", "error", retErr.Error())
 			}
 			retErr = nil
 			break
@@ -135,9 +133,7 @@ func (c *Client) makeLdapSearchRequest(cfg *ConfigEntry, conn Connection, userna
 		return nil, err
 	}
 
-	if c.Logger.IsDebug() {
-		c.Logger.Debug("discovering user", "userdn", cfg.UserDN, "filter", renderedFilter)
-	}
+	c.Logger.Debug("discovering user", "userdn", cfg.UserDN, "filter", renderedFilter)
 	ldapRequest := &ldap.SearchRequest{
 		BaseDN:       cfg.UserDN,
 		DerefAliases: ldapDerefAliasMap[cfg.DerefAliases],
@@ -206,9 +202,7 @@ func (c *Client) RenderUserSearchFilter(cfg *ConfigEntry, username string) (stri
 
 	// If userfilter was defined, resolve it as a Go template and use the query to
 	// find the login user
-	if c.Logger.IsDebug() {
-		c.Logger.Debug("compiling search filter", "search_filter", cfg.UserFilter)
-	}
+	c.Logger.Debug("compiling search filter", "search_filter", cfg.UserFilter)
 
 	// Parse the configuration as a template.
 	// Example template "({{.UserAttr}}={{.Username}})"
@@ -298,10 +292,8 @@ func (c *Client) GetUserDN(cfg *ConfigEntry, conn Connection, bindDN, username s
 	userDN := ""
 	if cfg.UPNDomain != "" {
 		// Find the distinguished name for the user if userPrincipalName used for login
-		filter := fmt.Sprintf("(userPrincipalName=%s@%s)", EscapeLDAPValue(username), cfg.UPNDomain)
-		if c.Logger.IsDebug() {
-			c.Logger.Debug("searching upn", "userdn", cfg.UserDN, "filter", filter)
-		}
+		filter := fmt.Sprintf("(userPrincipalName=%s@%s)", ldap.EscapeFilter(username), cfg.UPNDomain)
+		c.Logger.Debug("searching upn", "userdn", cfg.UserDN, "filter", filter)
 		result, err := conn.Search(&ldap.SearchRequest{
 			BaseDN:       cfg.UserDN,
 			Scope:        ldap.ScopeWholeSubtree,
@@ -335,9 +327,7 @@ func (c *Client) performLdapFilterGroupsSearch(cfg *ConfigEntry, conn Connection
 
 	// If groupfilter was defined, resolve it as a Go template and use the query for
 	// returning the user's groups
-	if c.Logger.IsDebug() {
-		c.Logger.Debug("compiling group filter", "group_filter", cfg.GroupFilter)
-	}
+	c.Logger.Debug("compiling group filter", "group_filter", cfg.GroupFilter)
 
 	// Parse the configuration as a template.
 	// Example template "(&(objectClass=group)(member:1.2.840.113556.1.4.1941:={{.UserDN}}))"
@@ -360,9 +350,7 @@ func (c *Client) performLdapFilterGroupsSearch(cfg *ConfigEntry, conn Connection
 		return nil, fmt.Errorf("LDAP search failed due to template parsing error: %w", err)
 	}
 
-	if c.Logger.IsDebug() {
-		c.Logger.Debug("searching", "groupdn", cfg.GroupDN, "rendered_query", renderedQuery.String())
-	}
+	c.Logger.Debug("searching", "groupdn", cfg.GroupDN, "rendered_query", renderedQuery.String())
 
 	result, err := conn.Search(&ldap.SearchRequest{
 		BaseDN:       cfg.GroupDN,
@@ -394,9 +382,7 @@ func (c *Client) performLdapFilterGroupsSearchPaging(cfg *ConfigEntry, conn Pagi
 
 	// If groupfilter was defined, resolve it as a Go template and use the query for
 	// returning the user's groups
-	if c.Logger.IsDebug() {
-		c.Logger.Debug("compiling group filter", "group_filter", cfg.GroupFilter)
-	}
+	c.Logger.Debug("compiling group filter", "group_filter", cfg.GroupFilter)
 
 	// Parse the configuration as a template.
 	// Example template "(&(objectClass=group)(member:1.2.840.113556.1.4.1941:={{.UserDN}}))"
@@ -423,9 +409,7 @@ func (c *Client) performLdapFilterGroupsSearchPaging(cfg *ConfigEntry, conn Pagi
 		return nil, fmt.Errorf("LDAP search failed due to template parsing error: %w", err)
 	}
 
-	if c.Logger.IsDebug() {
-		c.Logger.Debug("searching", "groupdn", cfg.GroupDN, "rendered_query", renderedQuery.String())
-	}
+	c.Logger.Debug("searching", "groupdn", cfg.GroupDN, "rendered_query", renderedQuery.String())
 
 	result, err := conn.SearchWithPaging(&ldap.SearchRequest{
 		BaseDN:       cfg.GroupDN,
@@ -468,12 +452,13 @@ func sidBytesToString(b []byte) (string, error) {
 		return "", fmt.Errorf("SID %#v convert failed reading SubAuthority: %w", b, err)
 	}
 
-	result := fmt.Sprintf("S-%d-%d", revision, identifierAuthority)
+	var result strings.Builder
+	result.WriteString(fmt.Sprintf("S-%d-%d", revision, identifierAuthority))
 	for _, subAuthorityPart := range subAuthority {
-		result += fmt.Sprintf("-%d", subAuthorityPart)
+		result.WriteString(fmt.Sprintf("-%d", subAuthorityPart))
 	}
 
-	return result, nil
+	return result.String(), nil
 }
 
 func (c *Client) performLdapTokenGroupsSearch(cfg *ConfigEntry, conn Connection, userDN string) ([]*ldap.Entry, error) {
@@ -504,11 +489,8 @@ func (c *Client) performLdapTokenGroupsSearch(cfg *ConfigEntry, conn Connection,
 	groupAttrValues := userEntry.GetRawAttributeValues("tokenGroups")
 	groupEntries := make([]*ldap.Entry, 0, len(groupAttrValues))
 
-	for i := 0; i < maxWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
+	for range maxWorkers {
+		wg.Go(func() {
 			for sid := range taskChan {
 				groupResult, err := conn.Search(&ldap.SearchRequest{
 					BaseDN:       fmt.Sprintf("<SID=%s>", sid),
@@ -534,7 +516,7 @@ func (c *Client) performLdapTokenGroupsSearch(cfg *ConfigEntry, conn Connection,
 				groupEntries = append(groupEntries, groupResult.Entries[0])
 				lock.Unlock()
 			}
-		}()
+		})
 	}
 
 	for _, sidBytes := range groupAttrValues {
@@ -639,7 +621,7 @@ func EscapeLDAPValue(input string) string {
 	}
 
 	inputLen := len(input)
-	for i := 0; i < inputLen; i++ {
+	for i := range inputLen {
 		char := input[i]
 		switch {
 		case i == 0 && char == ' ' || char == '#':

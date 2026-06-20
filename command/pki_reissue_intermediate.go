@@ -13,9 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/posener/complete"
@@ -23,11 +25,6 @@ import (
 
 type PKIReIssueCACommand struct {
 	*BaseCommand
-
-	flagConfig          string
-	flagReturnIndicator string
-	flagDefaultDisabled bool
-	flagList            bool
 
 	flagKeyStorageSource string
 	flagNewIssuerName    string
@@ -82,7 +79,7 @@ func (c *PKIReIssueCACommand) Run(args []string) int {
 		return 1
 	}
 
-	stdin := (io.Reader)(os.Stdin)
+	stdin := io.Reader(os.Stdin)
 	if c.flagNonInteractive {
 		stdin = bytes.NewReader(nil)
 	}
@@ -123,6 +120,11 @@ func (c *PKIReIssueCACommand) Run(args []string) int {
 	}
 
 	templateData, err := parseTemplateCertificate(*certificate, useExistingKey, keyRef)
+	if err != nil {
+		c.UI.Error(fmt.Sprintf("Error parsing template certificate: %v", err))
+		return 1
+	}
+
 	data := updateTemplateWithData(templateData, userData)
 
 	return pkiIssue(c.BaseCommand, parentIssuer, intermediateMount, c.flagNewIssuerName, c.flagKeyStorageSource, data)
@@ -131,9 +133,7 @@ func (c *PKIReIssueCACommand) Run(args []string) int {
 func updateTemplateWithData(template map[string]interface{}, changes map[string]interface{}) map[string]interface{} {
 	data := map[string]interface{}{}
 
-	for key, value := range template {
-		data[key] = value
-	}
+	maps.Copy(data, template)
 
 	// ttl and not_after set the same thing.  Delete template ttl if using not_after:
 	if _, ok := changes["not_after"]; ok {
@@ -145,9 +145,7 @@ func updateTemplateWithData(template map[string]interface{}, changes map[string]
 		delete(data, "key_bits")
 	}
 
-	for key, value := range changes {
-		data[key] = value
-	}
+	maps.Copy(data, changes)
 
 	return data
 }
@@ -171,7 +169,7 @@ func parseTemplateCertificate(certificate x509.Certificate, useExistingKey bool,
 		"street_address":        certificate.Subject.StreetAddress,
 		"postal_code":           certificate.Subject.PostalCode,
 		"serial_number":         certificate.Subject.SerialNumber,
-		"ttl":                   (certificate.NotAfter.Sub(certificate.NotBefore)).String(),
+		"ttl":                   certificate.NotAfter.Sub(certificate.NotBefore).String(),
 		"max_path_length":       certificate.MaxPathLen,
 		"permitted_dns_domains": strings.Join(certificate.PermittedDNSDomains, ","),
 		"use_pss":               isPSS(certificate.SignatureAlgorithm),
@@ -227,20 +225,12 @@ func determineExcludeCnFromSans(certificate x509.Certificate) bool {
 	}
 
 	emails := certificate.EmailAddresses
-	for _, email := range emails {
-		if email == cn {
-			return false
-		}
+	if slices.Contains(emails, cn) {
+		return false
 	}
 
 	dnses := certificate.DNSNames
-	for _, dns := range dnses {
-		if dns == cn {
-			return false
-		}
-	}
-
-	return true
+	return !slices.Contains(dnses, cn)
 }
 
 func findBitLength(publicKey any) int {

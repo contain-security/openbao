@@ -4,7 +4,6 @@
 package misc
 
 import (
-	"context"
 	"path"
 	"testing"
 
@@ -23,7 +22,7 @@ import (
 // and deletes the data via sys/raw, and finally restarts it in normal mode and
 // makes sure the data has been deleted.
 func TestRecovery_Docker(t *testing.T) {
-	ctx := context.TODO()
+	ctx := t.Context()
 
 	t.Parallel()
 	binary := api.ReadBaoVariable("BAO_BINARY")
@@ -95,6 +94,9 @@ func TestRecovery_Docker(t *testing.T) {
 		}
 		var result []string
 		err = mapstructure.Decode(secret.Data["keys"], &result)
+		if err != nil {
+			t.Fatal(err)
+		}
 		return result
 	}
 

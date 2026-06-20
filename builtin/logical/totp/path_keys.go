@@ -102,7 +102,7 @@ func pathKeys(b *backend) *framework.Path {
 			"period": {
 				Type:        framework.TypeDurationSecond,
 				Default:     30,
-				Description: `The length of time used to generate a counter for the TOTP token calculation.`,
+				Description: `The duration used to generate a counter for the TOTP token calculation.`,
 			},
 
 			"algorithm": {
@@ -261,23 +261,23 @@ func (b *backend) pathKeyCreate(ctx context.Context, req *logical.Request, data 
 		// Set up query object
 		urlQuery := urlObject.Query()
 		path := strings.TrimPrefix(urlObject.Path, "/")
-		index := strings.Index(path, ":")
+		before, after, ok := strings.Cut(path, ":")
 
 		// Read issuer
 		urlIssuer := urlQuery.Get("issuer")
 		if urlIssuer != "" {
 			issuer = urlIssuer
 		} else {
-			if index != -1 {
-				issuer = path[:index]
+			if ok {
+				issuer = before
 			}
 		}
 
 		// Read account name
-		if index == -1 {
+		if !ok {
 			accountName = path
 		} else {
-			accountName = path[index+1:]
+			accountName = after
 		}
 
 		// Read key string
@@ -429,8 +429,7 @@ func (b *backend) pathKeyCreate(ctx context.Context, req *logical.Request, data 
 
 		_, err := base32.StdEncoding.DecodeString(strings.ToUpper(keyString))
 		if err != nil {
-			return logical.ErrorResponse(fmt.Sprintf(
-				"invalid key value: %s", err)), nil
+			return logical.ErrorResponse("invalid key value: %s", err), nil
 		}
 	}
 
@@ -455,13 +454,13 @@ func (b *backend) pathKeyCreate(ctx context.Context, req *logical.Request, data 
 }
 
 type keyEntry struct {
-	Key         string           `json:"key" mapstructure:"key" structs:"key"`
-	Issuer      string           `json:"issuer" mapstructure:"issuer" structs:"issuer"`
-	AccountName string           `json:"account_name" mapstructure:"account_name" structs:"account_name"`
-	Period      uint             `json:"period" mapstructure:"period" structs:"period"`
-	Algorithm   otplib.Algorithm `json:"algorithm" mapstructure:"algorithm" structs:"algorithm"`
-	Digits      otplib.Digits    `json:"digits" mapstructure:"digits" structs:"digits"`
-	Skew        uint             `json:"skew" mapstructure:"skew" structs:"skew"`
+	Key         string           `json:"key" mapstructure:"key"`
+	Issuer      string           `json:"issuer" mapstructure:"issuer"`
+	AccountName string           `json:"account_name" mapstructure:"account_name"`
+	Period      uint             `json:"period" mapstructure:"period"`
+	Algorithm   otplib.Algorithm `json:"algorithm" mapstructure:"algorithm"`
+	Digits      otplib.Digits    `json:"digits" mapstructure:"digits"`
+	Skew        uint             `json:"skew" mapstructure:"skew"`
 }
 
 const pathKeyHelpSyn = `
@@ -470,5 +469,4 @@ Manage the keys that can be created with this backend.
 
 const pathKeyHelpDesc = `
 This path lets you manage the keys that can be created with this backend.
-
 `

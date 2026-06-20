@@ -5,8 +5,10 @@ import (
 	"fmt"
 )
 
+const responseSourceName = "response"
+
 // ResponseSourceBuilder allows reading inputs from past responses.
-func ResponseSourceBuilder(ctx context.Context, engine *ProfileEngine, field map[string]interface{}) Source {
+func ResponseSourceBuilder(engine *ProfileEngine, field map[string]interface{}) Source {
 	return &ResponseSource{
 		outer: engine.outerBlockName,
 		field: field,
@@ -17,8 +19,13 @@ var _ SourceBuilder = ResponseSourceBuilder
 
 func WithResponseSource() func(*ProfileEngine) {
 	return func(p *ProfileEngine) {
-		p.sourceBuilders["response"] = ResponseSourceBuilder
+		p.sourceBuilders[responseSourceName] = ResponseSourceBuilder
 	}
+}
+
+func HasResponseSource(engine *ProfileEngine) bool {
+	_, ok := engine.sourceBuilders[responseSourceName]
+	return ok
 }
 
 type ResponseSource struct {
@@ -27,12 +34,12 @@ type ResponseSource struct {
 
 	outerName     string
 	responseName  string
-	fieldSelector interface{}
+	fieldSelector []interface{}
 }
 
 var _ Source = &ResponseSource{}
 
-func (s *ResponseSource) Validate(_ context.Context) ([]string, []string, error) {
+func (s *ResponseSource) Validate() ([]string, []string, error) {
 	var responseName string
 
 	if s.outer != "" {
@@ -65,16 +72,23 @@ func (s *ResponseSource) Validate(_ context.Context) ([]string, []string, error)
 	responseName += respName
 
 	rawFieldSelector := s.field["field_selector"]
-
 	if present {
-		switch rawFieldSelector.(type) {
-		case string:
+		switch fieldSelector := rawFieldSelector.(type) {
+		case int, string:
+			s.fieldSelector = []interface{}{fieldSelector}
+		case []int:
+			for _, item := range fieldSelector {
+				s.fieldSelector = append(s.fieldSelector, item)
+			}
 		case []string:
+			for _, item := range fieldSelector {
+				s.fieldSelector = append(s.fieldSelector, item)
+			}
+		case []interface{}:
+			s.fieldSelector = fieldSelector
 		default:
-			return nil, nil, fmt.Errorf("unknown type for response source field 'field_selector': %T; expected either string or []string", rawFieldSelector)
+			return nil, nil, fmt.Errorf("unknown type for response source field 'field_selector': %T; expected either string, []string, []interface{}", rawFieldSelector)
 		}
-
-		s.fieldSelector = rawFieldSelector
 	}
 
 	return []string{responseName}, nil, nil

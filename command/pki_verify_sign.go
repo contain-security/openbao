@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -20,11 +21,6 @@ import (
 
 type PKIVerifySignCommand struct {
 	*BaseCommand
-
-	flagConfig          string
-	flagReturnIndicator string
-	flagDefaultDisabled bool
-	flagList            bool
 }
 
 func (c *PKIVerifySignCommand) Synopsis() string {
@@ -109,7 +105,11 @@ func (c *PKIVerifySignCommand) Run(args []string) int {
 		return pkiRetUsage
 	}
 
-	c.outputResults(results, issuer, issued)
+	err = c.outputResults(results, issuer, issued)
+	if err != nil {
+		c.UI.Error(fmt.Sprintf("Failed to output results: %v", err))
+		return 1
+	}
 
 	return 0
 }
@@ -140,11 +140,8 @@ func verifySignBetween(client *api.Client, issuerResp *issuerResponse, issuedPat
 	} else if err == nil {
 		for _, chain := range trusts {
 			// Output of this Should Only Have One Trust with Chain of Length Two (Child followed by Parent)
-			for _, cert := range chain {
-				if issuedCertBundle.certificate.Equal(cert) {
-					trust = true
-					break
-				}
+			if slices.ContainsFunc(chain, issuedCertBundle.certificate.Equal) {
+				trust = true
 			}
 		}
 	}

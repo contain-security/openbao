@@ -1,27 +1,30 @@
 ---
 description: >-
-  External Plugins are mountable backends that are implemented using OpenBao's
-  plugin system.
+  Learn about API-driven plugin management in OpenBao.
 ---
 
-# Plugin management
+# API-driven Plugin Management
 
-External plugins are the components in OpenBao that can be implemented separately
-from OpenBao's built-in plugins. These plugins can be either authentication or
-secrets engines.
+External plugins are the components in OpenBao that can be implemented
+separately from OpenBao's built-in plugins. Refer to the [plugin system
+overview](./index.mdx) for an introduction to OpenBao's plugin system.
 
-The [`api_addr`][api_addr] must be set in order for the plugin process to
-establish communication with the OpenBao server during mount time. If the storage
-backend has HA enabled and supports automatic host address detection, OpenBao
-will automatically attempt to determine the `api_addr` as well.
+## Plugin distribution methods
 
-Detailed information regarding the plugin system can be found in the
-[internals documentation](/docs/plugins).
+OpenBao supports two methods for distributing external plugins:
 
-## Registering external plugins
+1. **Manual management** - Manual download of plugin binaries
+2. **OCI-based distribution** - Automatic download from container registries
+   with declarative configuration. See the [OCI
+   Plugin](../configuration/plugins.mdx) configuration reference for complete
+   documentation.
+
+Both methods require the plugin to be registered in OpenBao before it can be used.
+
+## Registering external plugins via the API
 
 Before an external plugin can be mounted, it needs to be
-[registered](/docs/plugins/plugin-architecture#plugin-registration) in the
+[registered](plugin-architecture.mdx#plugin-registration) in the
 plugin catalog to ensure the plugin invoked by OpenBao is authentic and maintains
 integrity:
 
@@ -33,7 +36,7 @@ $ bao plugin register -sha256=<SHA256 Hex value of the plugin binary> \
 Success! Registered plugin: passthrough-plugin
 ```
 
-## Enabling/Disabling external plugins
+## Enabling/Disabling external plugins via the API
 
 After the plugin is registered, it can be mounted by specifying the registered
 plugin name:
@@ -60,8 +63,7 @@ $ bao secrets disable my-secrets
 
 ## Upgrading plugins
 
-Upgrade instructions can be found in the [Upgrading Plugins - Guides][upgrading_plugins]
-page.
+Upgrade instructions can be found in the [Upgrading Plugins -
+Guides][upgrading_plugins] page.
 
-[api_addr]: /docs/configuration#api_addr
-[upgrading_plugins]: /docs/upgrading/plugins
+[upgrading_plugins]: ../upgrading/plugins.mdx

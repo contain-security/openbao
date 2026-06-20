@@ -4,13 +4,12 @@
 package keysutil
 
 import (
-	"context"
 	"crypto/rand"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 
-	"github.com/hashicorp/go-secure-stdlib/strutil"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
 
@@ -79,7 +78,7 @@ func TestEncryptedKeysStorage_List(t *testing.T) {
 		VersionTemplate:      EncryptedKeyPolicyVersionTpl,
 	})
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := policy.Rotate(ctx, s, rand.Reader)
 	if err != nil {
@@ -123,6 +122,10 @@ func TestEncryptedKeysStorage_List(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if len(keys) != 2 || keys[1] != "foo1/" || keys[0] != "foo" {
+		t.Fatalf("bad keys: %#v", keys)
+	}
+
 	// Test prefixed with "/"
 	keys, err = es.Wrap(s).List(ctx, "/test/")
 	if err != nil {
@@ -161,7 +164,7 @@ func TestEncryptedKeysStorage_CRUD(t *testing.T) {
 		VersionTemplate:      EncryptedKeyPolicyVersionTpl,
 	})
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := policy.Rotate(ctx, s, rand.Reader)
 	if err != nil {
@@ -197,13 +200,17 @@ func TestEncryptedKeysStorage_CRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if len(keys) != 2 || !slices.Contains(keys, "foo1/") || !slices.Contains(keys, "foo") {
+		t.Fatalf("bad keys: %#v", keys)
+	}
+
 	// Test prefixed with "/"
 	keys, err = es.Wrap(s).List(ctx, "/test/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(keys) != 2 || !strutil.StrListContains(keys, "foo1/") || !strutil.StrListContains(keys, "foo") {
+	if len(keys) != 2 || !slices.Contains(keys, "foo1/") || !slices.Contains(keys, "foo") {
 		t.Fatalf("bad keys: %#v", keys)
 	}
 
@@ -213,7 +220,7 @@ func TestEncryptedKeysStorage_CRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(keys) != 2 || !strutil.StrListContains(keys, "foo1/") || !strutil.StrListContains(keys, "foo") {
+	if len(keys) != 2 || !slices.Contains(keys, "foo1/") || !slices.Contains(keys, "foo") {
 		t.Fatalf("bad keys: %#v", keys)
 	}
 
@@ -250,7 +257,7 @@ func BenchmarkEncrytedKeyStorage_List(b *testing.B) {
 		VersionTemplate:      EncryptedKeyPolicyVersionTpl,
 	})
 
-	ctx := context.Background()
+	ctx := b.Context()
 
 	err := policy.Rotate(ctx, s, rand.Reader)
 	if err != nil {
@@ -265,7 +272,7 @@ func BenchmarkEncrytedKeyStorage_List(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		err = es.Wrap(s).Put(ctx, &logical.StorageEntry{
 			Key:   fmt.Sprintf("test/%d", i),
 			Value: []byte("test"),
@@ -296,7 +303,7 @@ func BenchmarkEncrytedKeyStorage_Put(b *testing.B) {
 		VersionTemplate:      EncryptedKeyPolicyVersionTpl,
 	})
 
-	ctx := context.Background()
+	ctx := b.Context()
 
 	err := policy.Rotate(ctx, s, rand.Reader)
 	if err != nil {

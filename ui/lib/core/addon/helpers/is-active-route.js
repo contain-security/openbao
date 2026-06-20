@@ -7,22 +7,17 @@
 import { inject as service } from '@ember/service';
 import { isArray } from '@ember/array';
 import Helper from '@ember/component/helper';
-import { observer } from '@ember/object';
 
 const exact = (a, b) => a === b;
 const startsWith = (a, b) => a.indexOf(b) === 0;
 
-export default Helper.extend({
-  router: service(),
-
-  onRouteChange: observer('router.currentURL', 'router.currentRouteName', function () {
-    this.recompute();
-  }),
+export default class IsActiveRoute extends Helper {
+  @service('host-router') router;
 
   compute([routeName, model], { isExact }) {
     const router = this.router;
-    const currentRoute = router.get('currentRouteName');
-    let currentURL = router.get('currentURL');
+    const currentRoute = router.currentRouteName;
+    let currentURL = router.currentURL;
     // if we have any query params we want to discard them
     currentURL = currentURL?.split('?')[0];
     const comparator = isExact ? exact : startsWith;
@@ -37,5 +32,5 @@ export default Helper.extend({
     } else {
       return comparator(currentRoute, routeName);
     }
-  },
-});
+  }
+}

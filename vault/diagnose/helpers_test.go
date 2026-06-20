@@ -67,7 +67,7 @@ func TestDiagnoseOtelResults(t *testing.T) {
 	}
 	sess := New(os.Stdout)
 	sess.SkipFilters = []string{"dispose-grounds"}
-	ctx := Context(context.Background(), sess)
+	ctx := Context(t.Context(), sess)
 
 	func() {
 		ctx, span := StartSpan(ctx, "make-coffee")
@@ -138,7 +138,7 @@ func warmMilk(ctx context.Context) error {
 }
 
 func brewCoffee(ctx context.Context) error {
-	ctx, span := StartSpan(ctx, "brew-coffee")
+	_, span := StartSpan(ctx, "brew-coffee")
 	defer span.End()
 
 	// Brewing happens here, successfully

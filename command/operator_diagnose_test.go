@@ -6,7 +6,6 @@
 package command
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -480,7 +479,6 @@ func TestOperatorDiagnoseCommand_Run(t *testing.T) {
 		t.Parallel()
 
 		for _, tc := range cases {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client, closer := testVaultServer(t)
@@ -489,7 +487,7 @@ func TestOperatorDiagnoseCommand_Run(t *testing.T) {
 				cmd.client = client
 
 				cmd.Run(tc.args)
-				result := cmd.diagnose.Finalize(context.Background())
+				result := cmd.diagnose.Finalize(t.Context())
 
 				if err := compareResults(tc.expected, result.Children); err != nil {
 					t.Fatalf("Did not find expected test results: %v", err)
@@ -557,8 +555,8 @@ func compareResult(exp *diagnose.Result, act *diagnose.Result) error {
 	}
 
 	// Remove raft file if it exists
-	os.Remove("./server/test-fixtures/vault.db")
-	os.RemoveAll("./server/test-fixtures/raft")
+	os.Remove("./server/test-fixtures/vault.db") //nolint:errcheck
+	os.RemoveAll("./server/test-fixtures/raft")  //nolint:errcheck
 
 	return nil
 }

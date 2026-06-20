@@ -21,13 +21,18 @@ import (
 	"golang.org/x/net/http2"
 
 	cleanhttp "github.com/hashicorp/go-cleanhttp"
+	"github.com/hashicorp/go-secure-stdlib/base62"
 	"github.com/openbao/openbao/api/v2"
 	credCert "github.com/openbao/openbao/builtin/credential/cert"
 	"github.com/openbao/openbao/builtin/logical/transit"
+	"github.com/openbao/openbao/helper/configutil"
+	"github.com/openbao/openbao/helper/testhelpers"
 	"github.com/openbao/openbao/sdk/v2/helper/consts"
 	"github.com/openbao/openbao/sdk/v2/helper/keysutil"
+	"github.com/openbao/openbao/sdk/v2/helper/pointerutil"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/openbao/openbao/vault"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHTTP_Fallback_Bad_Address(t *testing.T) {
@@ -144,7 +149,8 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 	}
 
 	cluster := vault.NewTestCluster(t, coreConfig, &vault.TestClusterOptions{
-		HandlerFunc: Handler,
+		HandlerFunc:         Handler,
+		DisableStandbyReads: true,
 	})
 	cluster.Start()
 	defer cluster.Cleanup()
@@ -189,19 +195,21 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// core.Logger().Printf("[TRACE] done mounting transit")
 
-	var totalOps *uint32 = new(uint32)
-	var successfulOps *uint32 = new(uint32)
-	var key1ver *int32 = new(int32)
-	*key1ver = 1
-	var key2ver *int32 = new(int32)
-	*key2ver = 1
-	var key3ver *int32 = new(int32)
-	*key3ver = 1
-	var numWorkers *uint32 = new(uint32)
-	*numWorkers = 50
-	var numWorkersStarted *uint32 = new(uint32)
+	totalOps := atomic.Uint32{}
+	successfulOps := atomic.Uint32{}
+	key1ver := atomic.Int32{}
+	key1ver.Store(1)
+
+	key2ver := atomic.Int32{}
+	key2ver.Store(1)
+
+	key3ver := atomic.Int32{}
+	key3ver.Store(1)
+
+	numWorkers := atomic.Uint32{}
+	numWorkers.Store(50)
+	numWorkersStarted := atomic.Uint32{}
 	var waitLock sync.Mutex
 	waitCond := sync.NewCond(&waitLock)
 
@@ -216,8 +224,8 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 				core.Logger().Error("got a panic", "error", err)
 				t.Fail()
 			}
-			atomic.AddUint32(totalOps, myTotalOps)
-			atomic.AddUint32(successfulOps, mySuccessfulOps)
+			totalOps.Add(myTotalOps)
+			successfulOps.Add(mySuccessfulOps)
 			wg.Done()
 		}()
 
@@ -249,7 +257,7 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 			if resp == nil {
 				return nil, errors.New("nil response")
 			}
-			defer resp.Body.Close()
+			defer resp.Body.Close() //nolint:errcheck
 
 			// Make sure we weren't redirected
 			if resp.StatusCode > 300 && resp.StatusCode < 400 {
@@ -290,10 +298,10 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 			}
 		}
 
-		atomic.AddUint32(numWorkersStarted, 1)
+		numWorkersStarted.Add(1)
 
 		waitCond.L.Lock()
-		for atomic.LoadUint32(numWorkersStarted) != atomic.LoadUint32(numWorkers) {
+		for numWorkersStarted.Load() != numWorkers.Load() {
 			waitCond.Wait()
 		}
 		waitCond.L.Unlock()
@@ -304,7 +312,7 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 		startTime := time.Now()
 		for {
 			// Stop after 10 seconds
-			if time.Now().Sub(startTime) > 10*time.Second {
+			if time.Since(startTime) > 10*time.Second {
 				return
 			}
 
@@ -321,7 +329,7 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 			// Encrypt our plaintext and store the result
 			case "encrypt":
 				// core.Logger().Printf("[TRACE] %s, %s, %d", chosenFunc, chosenKey, id)
-				resp, err := doReq("POST", chosenHost+"encrypt/"+chosenKey, bytes.NewBuffer([]byte(fmt.Sprintf("{\"plaintext\": \"%s\"}", testPlaintextB64))))
+				resp, err := doReq("POST", chosenHost+"encrypt/"+chosenKey, bytes.NewBuffer(fmt.Appendf(nil, "{\"plaintext\": \"%s\"}", testPlaintextB64)))
 				if err != nil {
 					panic(err)
 				}
@@ -348,7 +356,7 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 				}
 
 				// core.Logger().Printf("[TRACE] %s, %s, %d", chosenFunc, chosenKey, id)
-				resp, err := doReq("POST", chosenHost+"decrypt/"+chosenKey, bytes.NewBuffer([]byte(fmt.Sprintf("{\"ciphertext\": \"%s\"}", ct))))
+				resp, err := doReq("POST", chosenHost+"decrypt/"+chosenKey, bytes.NewBuffer(fmt.Appendf(nil, "{\"ciphertext\": \"%s\"}", ct)))
 				if err != nil {
 					panic(err)
 				}
@@ -384,11 +392,11 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 				if parallel {
 					switch chosenKey {
 					case "test1":
-						atomic.AddInt32(key1ver, 1)
+						key1ver.Add(1)
 					case "test2":
-						atomic.AddInt32(key2ver, 1)
+						key2ver.Add(1)
 					case "test3":
-						atomic.AddInt32(key3ver, 1)
+						key3ver.Add(1)
 					}
 				} else {
 					keyVer++
@@ -398,15 +406,15 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 
 			// Change the min version, which also tests the archive functionality
 			case "change_min_version":
-				var latestVersion int32 = keyVer
+				latestVersion := keyVer
 				if parallel {
 					switch chosenKey {
 					case "test1":
-						latestVersion = atomic.LoadInt32(key1ver)
+						latestVersion = key1ver.Load()
 					case "test2":
-						latestVersion = atomic.LoadInt32(key2ver)
+						latestVersion = key2ver.Load()
 					case "test3":
-						latestVersion = atomic.LoadInt32(key3ver)
+						latestVersion = key3ver.Load()
 					}
 				}
 
@@ -414,7 +422,7 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 
 				// core.Logger().Printf("[TRACE] %s, %s, %d, new min version %d", chosenFunc, chosenKey, id, setVersion)
 
-				_, err := doReq("POST", chosenHost+"keys/"+chosenKey+"/config", bytes.NewBuffer([]byte(fmt.Sprintf("{\"min_decryption_version\": %d}", setVersion))))
+				_, err := doReq("POST", chosenHost+"keys/"+chosenKey+"/config", bytes.NewBuffer(fmt.Appendf(nil, "{\"min_decryption_version\": %d}", setVersion)))
 				if err != nil {
 					panic(err)
 				}
@@ -424,22 +432,22 @@ func testHTTP_Forwarding_Stress_Common(t *testing.T, parallel bool, num uint32) 
 		}
 	}
 
-	atomic.StoreUint32(numWorkers, num)
-
+	numWorkers.Store(num)
 	// Spawn some of these workers for 10 seconds
-	for i := 0; i < int(atomic.LoadUint32(numWorkers)); i++ {
+	for i := 0; i < int(numWorkers.Load()); i++ {
 		wg.Add(1)
-		// core.Logger().Printf("[TRACE] spawning %d", i)
 		go doFuzzy(i+1, parallel)
 	}
 
 	// Wait for them all to finish
 	wg.Wait()
 
-	if *totalOps == 0 || *totalOps != *successfulOps {
-		t.Fatalf("total/successful ops zero or mismatch: %d/%d; parallel: %t, num %d", *totalOps, *successfulOps, parallel, num)
+	tOps := totalOps.Load()
+	sOps := successfulOps.Load()
+	if tOps == 0 || tOps != sOps {
+		t.Fatalf("total/successful ops zero or mismatch: %d/%d; parallel: %t, num %d", tOps, sOps, parallel, num)
 	}
-	t.Logf("total operations tried: %d, total successful: %d; parallel: %t, num %d", *totalOps, *successfulOps, parallel, num)
+	t.Logf("total operations tried: %d, total successful: %d; parallel: %t, num %d", tOps, sOps, parallel, num)
 }
 
 // This tests TLS connection state forwarding by ensuring that we can use a
@@ -573,18 +581,18 @@ func TestHTTP_Forwarding_HelpOperation(t *testing.T) {
 
 	vault.TestWaitActive(t, cores[0].Core)
 
-	testHelp := func(client *api.Client) {
+	testHelp := func(node string, client *api.Client) {
 		help, err := client.Help("auth/token")
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("[on %v]: %v", node, err)
 		}
 		if help == nil {
-			t.Fatal("help was nil")
+			t.Fatalf("[on %v]: help was nil", node)
 		}
 	}
 
-	testHelp(cores[0].Client)
-	testHelp(cores[1].Client)
+	testHelp("active", cores[0].Client)
+	testHelp("standby", cores[1].Client)
 }
 
 func TestHTTP_Forwarding_LocalOnly(t *testing.T) {
@@ -596,14 +604,92 @@ func TestHTTP_Forwarding_LocalOnly(t *testing.T) {
 	cores := cluster.Cores
 
 	vault.TestWaitActive(t, cores[0].Core)
+	testhelpers.WaitForStandbyNode(t, cluster.Cores[1])
+	testhelpers.WaitForStandbyNode(t, cluster.Cores[2])
 
 	testLocalOnly := func(client *api.Client) {
-		_, err := client.Logical().Read("sys/config/state/sanitized")
-		if err == nil {
-			t.Fatal("expected error")
+		sec, err := client.Logical().Read("sys/config/state/sanitized")
+		if err != nil {
+			t.Fatalf("standby should handle local read without forwarding: %v", err)
+		}
+		if sec == nil || sec.Data == nil {
+			t.Fatalf("expected non-nil secret/data from local read")
 		}
 	}
 
 	testLocalOnly(cores[1].Client)
 	testLocalOnly(cores[2].Client)
+}
+
+func TestHTTP_Forwarding_StandbySystemEndpoints(t *testing.T) {
+	cluster := vault.NewTestCluster(t, &vault.CoreConfig{}, &vault.TestClusterOptions{
+		HandlerFunc: Handler,
+		DefaultHandlerProperties: vault.HandlerProperties{
+			ListenerConfig: &configutil.Listener{
+				DisableUnauthedGenerateRootEndpoints: pointerutil.BoolPtr(false),
+				DisableUnauthedRekeyEndpoints:        pointerutil.BoolPtr(false),
+			},
+		},
+		NumCores: 2,
+	})
+	cluster.Start()
+	defer cluster.Cleanup()
+
+	testhelpers.WaitForActiveNodeAndStandbys(t, cluster)
+
+	// Get a client that sends request to a standby.
+	standbyClient := func() *api.Client {
+		standbys := testhelpers.DeriveStandbyCores(t, cluster)
+		require.NotEmpty(t, standbys, "expected at least one standby core")
+		return standbys[0].Client
+	}
+
+	// Test that generate-root forwards to active.
+	otp, err := base62.Random(vault.TokenPrefixLength + vault.TokenLength)
+	require.NoError(t, err)
+	generateRootResponse, err := standbyClient().Sys().GenerateRootInit(otp, "")
+	require.NoError(t, err, "expected no error when request is successfully forwarded to active")
+	require.NotNil(t, generateRootResponse)
+	for _, k := range cluster.BarrierKeys {
+		generateRootResponse, err = standbyClient().Sys().GenerateRootUpdate(base64.StdEncoding.EncodeToString(k), generateRootResponse.Nonce)
+		require.NoError(t, err, "expected no error when request is successfully forwarded to active")
+	}
+	require.True(t, generateRootResponse.Complete)
+
+	// Test that rekey/init forwards to active.
+	//nolint:staticcheck // endpoint already marked as deprecated
+	rekeyInitResponse, err := standbyClient().Sys().RekeyInit(&api.RekeyInitRequest{
+		SecretShares:        1,
+		SecretThreshold:     1,
+		RequireVerification: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, rekeyInitResponse)
+	require.True(t, rekeyInitResponse.Started)
+
+	// Test that rekey/update forwards to active.
+	var rekeyUpdateResponse *api.RekeyUpdateResponse
+	for _, k := range cluster.BarrierKeys {
+		//nolint:staticcheck // endpoint already marked as deprecated
+		rekeyUpdateResponse, err = standbyClient().Sys().RekeyUpdate(base64.StdEncoding.EncodeToString(k), rekeyInitResponse.Nonce)
+		require.NoError(t, err)
+	}
+	require.True(t, rekeyUpdateResponse.Complete)
+
+	// Test that rekey/verify forwards to active.
+	var rekeyVerifyResponse *api.RekeyVerificationUpdateResponse
+	for _, k := range rekeyUpdateResponse.Keys {
+		//nolint:staticcheck // endpoint already marked as deprecated
+		rekeyVerifyResponse, err = standbyClient().Sys().RekeyVerificationUpdate(k, rekeyUpdateResponse.VerificationNonce)
+		require.NoError(t, err)
+	}
+	require.True(t, rekeyVerifyResponse.Complete)
+
+	// Test that step-down forwards to active.
+	activeBeforeStepDown := testhelpers.DeriveActiveCore(t, cluster)
+	err = standbyClient().Sys().StepDown()
+	require.NoError(t, err)
+	testhelpers.WaitForActiveNodeAndStandbys(t, cluster)
+	activeAfterStepDown := testhelpers.DeriveActiveCore(t, cluster)
+	require.NotEqual(t, activeBeforeStepDown.NodeID, activeAfterStepDown.NodeID, "expected different active after step-down")
 }

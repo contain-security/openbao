@@ -42,7 +42,7 @@ func (r *Response) Error() error {
 		return err
 	}
 
-	r.Body.Close()
+	r.Body.Close() //nolint:errcheck
 	r.Body = io.NopCloser(bodyBuf)
 	ns := r.Header.Get(NamespaceHeaderName)
 
@@ -123,7 +123,8 @@ func (r *ResponseError) Error() string {
 			ns+
 			"URL: %s %s\n"+
 			"Code: %d. %s:\n\n",
-		r.HTTPMethod, r.URL, r.StatusCode, errString))
+		r.HTTPMethod, r.URL, r.StatusCode, errString,
+	))
 
 	if r.RawError && len(r.Errors) == 1 {
 		errBody.WriteString(r.Errors[0])

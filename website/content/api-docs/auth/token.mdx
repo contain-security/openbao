@@ -85,10 +85,10 @@ during this call.
   to be renewed past its initial TTL. Setting the value to `true` will allow
   the token to be renewable up to the system/mount maximum TTL.
 - `lease` `(string: "")` - DEPRECATED; use `ttl` instead
-- `ttl` `(string: "")` - The TTL period of the token, provided as "1h", where
-  hour is the largest suffix. If not provided, the token is valid for the
-  [default lease TTL](/docs/configuration), or indefinitely if the
-  root policy is used.
+- `ttl` `(string: "")` - The TTL period of the token, provided as a
+  [duration string](/docs/concepts/duration-format). If not provided, the
+  token is valid for the [default lease TTL](/docs/configuration), or
+  indefinitely if the root policy is used.
 - `type` `(string: "")` - The token type. Can be "batch" or "service". Defaults
   to the type specified by the role configuration named by `role_name`.
 - `explicit_max_ttl` `(string: "")` - If set, the token will have an explicit
@@ -335,8 +335,7 @@ if there is a lease associated with it.
 
 ### Parameters
 
-- `token` `(string: <required>)` - Token to renew. This can be part of the URL
-  or the body.
+- `token` `(string: <required>)` - Token to renew.
 - `increment` `(string: "")` - An optional requested increment duration can be
   provided. This increment may not be honored, for instance in the case of periodic tokens.
   If not supplied, OpenBao will use the default TTL. This is specified as a numeric string
@@ -572,8 +571,7 @@ endpoint.
 
 ### Parameters
 
-- `token` `(string: <required>)` - Token to revoke. This can be part of the URL
-  or the body.
+- `token` `(string: <required>)` - Token to revoke.
 
 ### Sample payload
 
