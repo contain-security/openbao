@@ -11,16 +11,10 @@ import (
 	"github.com/openbao/openbao/sdk/v2/physical"
 )
 
-// Test configuration - assumes local Consul running
-var testConfig = map[string]string{
-	"address": "127.0.0.1:8500",
-	"path":    "test/openbao/",
-}
-
 func TestConsulBackend_BASIC_CRUD(t *testing.T) {
 	logger := hclog.NewNullLogger()
 
-	backend, err := NewConsulBackend(testConfig, logger)
+	backend, err := NewConsulBackend(requireConsul(t, "test/openbao/crud/"), logger)
 	if err != nil {
 		t.Fatalf("Failed to create backend: %v", err)
 	}
@@ -91,7 +85,7 @@ func TestConsulBackend_BASIC_CRUD(t *testing.T) {
 func TestConsulBackend_BASIC_List(t *testing.T) {
 	logger := hclog.NewNullLogger()
 
-	backend, err := NewConsulBackend(testConfig, logger)
+	backend, err := NewConsulBackend(requireConsul(t, "test/openbao/list/"), logger)
 	if err != nil {
 		t.Fatalf("Failed to create backend: %v", err)
 	}
@@ -137,7 +131,7 @@ func TestConsulBackend_BASIC_List(t *testing.T) {
 func TestConsulBackend_BASIC_ConcurrentOperations(t *testing.T) {
 	logger := hclog.NewNullLogger()
 
-	backend, err := NewConsulBackend(testConfig, logger)
+	backend, err := NewConsulBackend(requireConsul(t, "test/openbao/concurrent/"), logger)
 	if err != nil {
 		t.Fatalf("Failed to create backend: %v", err)
 	}
@@ -215,7 +209,7 @@ func TestConsulBackend_BASIC_ListPage_Pattern1_SimplePagination(t *testing.T) {
 	//	Output: os.Stderr,   // Use stderr to separate from test output
 	//	Color:  hclog.AutoColor})
 
-	backend, err := NewConsulBackend(testConfig, logger)
+	backend, err := NewConsulBackend(requireConsul(t, "test/openbao/listpage/"), logger)
 	if err != nil {
 		t.Fatalf("Failed to create backend: %v", err)
 	}
@@ -407,16 +401,10 @@ func TestConsulBackend_BASIC_ConfigValidation(t *testing.T) {
 			},
 			shouldErr: true,
 		},
-		{
-			name: "valid minimal config",
-			config: map[string]string{
-				"address": "127.0.0.1:8500",
-				"path":    "test/",
-			},
-			shouldErr: false,
-		},
 	}
 
+	// These cases fail during config validation, before any connection attempt,
+	// so they run everywhere without a live Consul.
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewConsulBackend(tc.config, logger)
@@ -428,4 +416,13 @@ func TestConsulBackend_BASIC_ConfigValidation(t *testing.T) {
 			}
 		})
 	}
+
+	// A valid minimal config succeeds only against a live Consul, since
+	// NewConsulBackend performs a connection test during construction.
+	t.Run("valid minimal config", func(t *testing.T) {
+		_, err := NewConsulBackend(requireConsul(t, "test/openbao/configvalid/"), logger)
+		if err != nil {
+			t.Fatalf("Unexpected error for valid minimal config: %v", err)
+		}
+	})
 }
