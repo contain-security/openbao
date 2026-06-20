@@ -1,0 +1,87 @@
+# contain-security fork: promote integration -> main on a new upstream release.
+# Detects the latest upstream FINAL release tag (vX.Y.Z, no pre-release suffix);
+# if main does not already contain it, validates the integration line and opens
+# an integration -> main PR with auto-merge (lands once required checks pass).
+name: cs-release-gate
+
+on:
+  schedule:
+    - cron: "37 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Promote even if main already contains the latest release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cs-release-gate
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.detect.outputs.tag }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Detect new upstream release
+        id: detect
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/openbao/openbao.git || true
+          git fetch --tags --force upstream main
+          latest="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+          echo "latest upstream release: $latest"
+          if [ -z "$latest" ]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          tagsha="$(git rev-list -n1 "$latest")"
+          if [ "$FORCE" != "true" ] && git merge-base --is-ancestor "$tagsha" origin/main; then
+            echo "main already contains $latest; nothing to promote"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    needs: detect
+    if: needs.detect.outputs.tag != ''
+    uses: ./.github/workflows/cs-validate.reusable.yml
+    with:
+      ref: integration
+
+  promote:
+    needs: [detect, validate]
+    if: needs.detect.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.CS_APP_ID }}
+          private-key: ${{ secrets.CS_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          token: ${{ steps.app.outputs.token }}
+      - name: Open release PR and enable auto-merge
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          set -euo pipefail
+          url="$(gh pr create --base main --head integration \
+            --title "Release ${TAG}: promote integration to main" \
+            --body "Automated promotion of the integration line for upstream release ${TAG}. Auto-merges once required checks pass." \
+            2>/dev/null || gh pr list --base main --head integration --state open --json url --jq '.[0].url')"
+          echo "PR: $url"
+          gh pr merge "$url" --auto --merge

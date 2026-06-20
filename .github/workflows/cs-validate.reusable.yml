@@ -1,0 +1,67 @@
+# contain-security fork: shared validation for a candidate ref.
+# Build + real-Consul backend/service-registration tests + GPG plugin test-bed.
+# Called by cs-sync-integrate (after a clean upstream merge) and cs-release-gate.
+name: cs-validate
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Ref to validate (branch/tag/sha)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: .go-version
+      - name: Build
+        env:
+          GOTOOLCHAIN: auto
+        run: go build ./...
+
+  consul-tests:
+    runs-on: ubuntu-latest
+    services:
+      consul:
+        image: hashicorp/consul:1.20.1
+        ports:
+          - 8500:8500
+        options: >-
+          --health-cmd "consul members"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      OPENBAO_CONSUL_TEST: "1" # turn skips into hard failures: guarantee coverage
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: .go-version
+      - name: Real-Consul backend + service-registration tests
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          go test -count=1 -timeout 20m -run Consul \
+            ./physical/consul/... ./serviceregistration/consul/...
+
+  testbed:
+    # GPG plugin cross-checks against bao built from the candidate ref.
+    uses: contain-security/openbao-testbed/.github/workflows/crosscheck.yml@main
+    with:
+      openbao_repo: ${{ github.repository }}
+      openbao_ref: ${{ inputs.ref }}
+      mode: both

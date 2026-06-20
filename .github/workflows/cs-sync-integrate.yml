@@ -1,0 +1,108 @@
+# contain-security fork: continuously sync upstream into the integration branch.
+# 1. Fast-forward the pristine upstream-mirror branch to upstream/main.
+# 2. Merge upstream/main into `integration` (the fork line carrying Consul).
+#    - conflict  -> open/refresh a tracking issue and stop (no auto-resolve)
+#    - clean     -> `go mod tidy`, push integration, run full validation
+# Driven from main (default branch) on a schedule so the workflow file is
+# always present (upstream-mirror is pristine and has no workflows).
+name: cs-sync-integrate
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read # the App token below carries write scope
+
+concurrency:
+  group: cs-sync-integrate
+  cancel-in-progress: false
+
+jobs:
+  sync-integrate:
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.merge.outputs.status }}
+    steps:
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.CS_APP_ID }}
+          private-key: ${{ secrets.CS_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: integration
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: .go-version
+      - name: Configure committer identity
+        run: |
+          git config user.name "Contain.Security"
+          git config user.email "contain.security@pacificdigitalconsulting.com"
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/openbao/openbao.git || true
+          git fetch --no-tags upstream main
+      - name: Fast-forward upstream-mirror
+        run: git push origin upstream/main:refs/heads/upstream-mirror --ff-only || echo "upstream-mirror not fast-forwardable (non-fatal)"
+      - name: Merge upstream into integration
+        id: merge
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          set -uo pipefail
+          if git merge --no-edit --no-ff upstream/main; then
+            go mod tidy
+            if ! git diff --quiet -- go.mod go.sum; then
+              git add go.mod go.sum
+              git commit -m "Update go modules after upstream merge"
+            fi
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort || true
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Push integration (clean merge)
+        if: steps.merge.outputs.status == 'clean'
+        run: git push origin HEAD:integration
+      - name: Raise conflict issue (stop; needs human resolution)
+        if: steps.merge.outputs.status == 'conflict'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          script: |
+            const label = 'cs:merge-conflict';
+            const title = 'Upstream sync: merge conflict on integration';
+            const body = [
+              'Automated upstream merge into `integration` hit conflicts and was aborted.',
+              '`integration` is unchanged. Resolve manually on a `fix/merge-*` branch and',
+              'merge into `integration` (which re-triggers validation).',
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join('\n');
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: label,
+            });
+            if (existing.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: [label],
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.data[0].number, body,
+              });
+            }
+
+  validate:
+    needs: sync-integrate
+    if: needs.sync-integrate.outputs.status == 'clean'
+    uses: ./.github/workflows/cs-validate.reusable.yml
+    with:
+      ref: integration
