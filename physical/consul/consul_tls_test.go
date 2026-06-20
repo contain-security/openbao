@@ -301,23 +301,20 @@ func TestConsulBackend_TLS_TLSWithLiveConsul(t *testing.T) {
 
 	logger := hclog.NewNullLogger()
 
-	// Test HTTP connection first
-	httpConf := map[string]string{
-		"address": "127.0.0.1:8500",
-		"path":    "test/",
-	}
-
-	httpBackend, httpErr := NewConsulBackend(httpConf, logger)
+	// HTTP connection (gated: hard-fails under OPENBAO_CONSUL_TEST=1 if unavailable,
+	// otherwise skips on a developer laptop).
+	httpBackend, httpErr := NewConsulBackend(requireConsul(t, "test/"), logger)
 	if httpErr != nil {
-		t.Skipf("Consul HTTP not available on 8500: %v", httpErr)
+		failOrSkip(t, "Consul HTTP not available: %v", httpErr)
 	}
 	if httpBackend != nil {
-		t.Logf("✓ Consul HTTP connection successful on port 8500")
+		t.Logf("✓ Consul HTTP connection successful")
 	}
 
-	// Test HTTPS connection
+	// HTTPS connection is best-effort (logged only) — a plain dev Consul has no
+	// TLS listener. Use the requireConsulTLS-gated test for real TLS coverage.
 	httpsConf := map[string]string{
-		"address":         "127.0.0.1:8501",
+		"address":         consulHTTPSAddr(),
 		"path":            "test/",
 		"tls_enabled":     "true",
 		"tls_skip_verify": "true", // Skip verification for test
@@ -325,14 +322,9 @@ func TestConsulBackend_TLS_TLSWithLiveConsul(t *testing.T) {
 
 	httpsBackend, httpsErr := NewConsulBackend(httpsConf, logger)
 	if httpsErr != nil {
-		t.Logf("Consul HTTPS not available on 8501 (expected if not configured): %v", httpsErr)
+		t.Logf("Consul HTTPS not available (expected if not configured): %v", httpsErr)
 	} else if httpsBackend != nil {
-		t.Logf("✓ Consul HTTPS connection successful on port 8501")
-	}
-
-	// At least one should work if Consul is properly configured
-	if httpBackend == nil && httpsBackend == nil {
-		t.Skip("Neither HTTP nor HTTPS Consul connections available")
+		t.Logf("✓ Consul HTTPS connection successful")
 	}
 }
 
@@ -880,17 +872,14 @@ func TestConsulBackend_TLS_TLSConnection(t *testing.T) {
 		Output: os.Stdout,
 	})
 
-	// Test with TLS enabled
-	tlsConfig := map[string]string{
-		"address":         "127.0.0.1:8501", // TLS port
-		"path":            "test/openbao/tls/",
-		"tls_enabled":     "true",
-		"tls_skip_verify": "true", // For testing with self-signed certs
-	}
+	// TLS-enabled config, gated on a live HTTPS Consul. requireConsulTLS only
+	// hard-fails (under OPENBAO_CONSUL_TEST=1) when CONSUL_HTTPS_ADDR is set, so
+	// a plain dev-Consul CI skips this rather than failing.
+	tlsConfig := requireConsulTLS(t, "test/openbao/tls/")
 
 	backend, err := NewConsulBackend(tlsConfig, logger)
 	if err != nil {
-		t.Skipf("TLS Consul not available: %v", err)
+		failOrSkip(t, "TLS Consul not available: %v", err)
 	}
 
 	// Test basic operation with TLS

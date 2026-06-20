@@ -28,18 +28,15 @@ func TestConsulBackend_HA_BasicLocking(t *testing.T) {
 		logger = hclog.NewNullLogger()
 	}
 
-	haConfig := map[string]string{
-		"address":        "127.0.0.1:8500",
-		"path":           "test/openbao/ha-basic/",
-		"ha_enabled":     "true",
-		"advertise_addr": "http://127.0.0.1:8200",
-		"session_ttl":    "10s",
-		"lock_delay":     "5s",
-	}
+	haConfig := requireConsul(t, "test/openbao/ha-basic/")
+	haConfig["ha_enabled"] = "true"
+	haConfig["advertise_addr"] = "http://127.0.0.1:8200"
+	haConfig["session_ttl"] = "10s"
+	haConfig["lock_delay"] = "5s"
 
 	backend, err := NewConsulBackend(haConfig, logger)
 	if err != nil {
-		t.Skipf("Consul not available for HA testing: %v", err)
+		failOrSkip(t, "Consul not available for HA testing: %v", err)
 	}
 
 	haBackend, ok := backend.(physical.HABackend)
@@ -135,19 +132,16 @@ func TestConsulBackend_HA_ConcurrentLocking(t *testing.T) {
 		logger = hclog.NewNullLogger()
 	}
 
-	haConfig := map[string]string{
-		"address":        "127.0.0.1:8500",
-		"path":           "test/openbao/ha-concurrent/",
-		"ha_enabled":     "true",
-		"advertise_addr": "http://127.0.0.1:8200",
-		"session_ttl":    "10s",
-		"lock_delay":     "1s", // Shorter delay for faster tests
-	}
+	haConfig := requireConsul(t, "test/openbao/ha-concurrent/")
+	haConfig["ha_enabled"] = "true"
+	haConfig["advertise_addr"] = "http://127.0.0.1:8200"
+	haConfig["session_ttl"] = "10s"
+	haConfig["lock_delay"] = "1s" // Shorter delay for faster tests
 
 	// Create two backend instances
 	backend1, err := NewConsulBackend(haConfig, logger.Named("backend1"))
 	if err != nil {
-		t.Skipf("Consul not available: %v", err)
+		failOrSkip(t, "Consul not available: %v", err)
 	}
 
 	backend2, err := NewConsulBackend(haConfig, logger.Named("backend2"))
@@ -280,18 +274,15 @@ func TestConsulBackend_HA_SessionRenewal(t *testing.T) {
 		logger = hclog.NewNullLogger()
 	}
 
-	haConfig := map[string]string{
-		"address":        "127.0.0.1:8500",
-		"path":           "test/openbao/ha-session/",
-		"ha_enabled":     "true",
-		"advertise_addr": "http://127.0.0.1:8200",
-		"session_ttl":    "12s", // Valid TTL (above 10s minimum)
-		"lock_delay":     "1s",
-	}
+	haConfig := requireConsul(t, "test/openbao/ha-session/")
+	haConfig["ha_enabled"] = "true"
+	haConfig["advertise_addr"] = "http://127.0.0.1:8200"
+	haConfig["session_ttl"] = "12s" // Valid TTL (above 10s minimum)
+	haConfig["lock_delay"] = "1s"
 
 	backend, err := NewConsulBackend(haConfig, logger)
 	if err != nil {
-		t.Skipf("Consul not available: %v", err)
+		failOrSkip(t, "Consul not available: %v", err)
 	}
 
 	haBackend := backend.(physical.HABackend)
@@ -398,14 +389,11 @@ func TestConsulBackend_HA_LockContention(t *testing.T) {
 		logger = hclog.NewNullLogger()
 	}
 
-	haConfig := map[string]string{
-		"address":        "127.0.0.1:8500",
-		"path":           "test/openbao/ha-contention/",
-		"ha_enabled":     "true",
-		"advertise_addr": "http://127.0.0.1:8200",
-		"session_ttl":    "10s",
-		"lock_delay":     "1s",
-	}
+	haConfig := requireConsul(t, "test/openbao/ha-contention/")
+	haConfig["ha_enabled"] = "true"
+	haConfig["advertise_addr"] = "http://127.0.0.1:8200"
+	haConfig["session_ttl"] = "10s"
+	haConfig["lock_delay"] = "1s"
 
 	numContenders := 5
 	lockKey := fmt.Sprintf("contention-test-%d", time.Now().UnixNano())
@@ -475,16 +463,13 @@ func TestConsulBackend_HA_LockValue(t *testing.T) {
 
 	logger := hclog.NewNullLogger()
 
-	haConfig := map[string]string{
-		"address":        "127.0.0.1:8500",
-		"path":           "test/openbao/ha-value/",
-		"ha_enabled":     "true",
-		"advertise_addr": "http://127.0.0.1:8200",
-	}
+	haConfig := requireConsul(t, "test/openbao/ha-value/")
+	haConfig["ha_enabled"] = "true"
+	haConfig["advertise_addr"] = "http://127.0.0.1:8200"
 
 	backend, err := NewConsulBackend(haConfig, logger)
 	if err != nil {
-		t.Skipf("Consul not available: %v", err)
+		failOrSkip(t, "Consul not available: %v", err)
 	}
 
 	haBackend := backend.(physical.HABackend)
@@ -542,6 +527,10 @@ func TestConsulBackend_HA_LockValue(t *testing.T) {
 }
 
 func TestConsulBackend_HA_Configuration(t *testing.T) {
+	// Every case below expects success, and NewConsulBackend performs a
+	// connection test during construction, so this needs a live Consul.
+	requireConsulReachable(t)
+
 	logger := hclog.NewNullLogger()
 
 	testCases := []struct {
@@ -553,7 +542,7 @@ func TestConsulBackend_HA_Configuration(t *testing.T) {
 		{
 			name: "valid HA config",
 			config: map[string]string{
-				"address":        "127.0.0.1:8500",
+				"address":        consulHTTPAddr(),
 				"path":           "test/",
 				"ha_enabled":     "true",
 				"advertise_addr": "http://127.0.0.1:8200",
@@ -563,7 +552,7 @@ func TestConsulBackend_HA_Configuration(t *testing.T) {
 		{
 			name: "HA disabled",
 			config: map[string]string{
-				"address": "127.0.0.1:8500",
+				"address": consulHTTPAddr(),
 				"path":    "test/",
 			},
 			shouldErr: false,
@@ -571,7 +560,7 @@ func TestConsulBackend_HA_Configuration(t *testing.T) {
 		{
 			name: "custom HA timing",
 			config: map[string]string{
-				"address":        "127.0.0.1:8500",
+				"address":        consulHTTPAddr(),
 				"path":           "test/",
 				"ha_enabled":     "true",
 				"advertise_addr": "http://127.0.0.1:8200",
