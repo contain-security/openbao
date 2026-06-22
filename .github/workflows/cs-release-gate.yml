@@ -5,6 +5,12 @@
 # fork tag). When promotable, validates the integration line and opens an
 # integration -> main PR with auto-merge (lands once required checks pass).
 #
+# The cs-promoted/<ver> marker is written by the companion cs-release-mark.yml
+# workflow when the PR actually merges -- never here. Auto-merge is asynchronous,
+# so stamping it at PR-open time would mark a release done before it lands and a
+# rejected promotion would never be retried. Stamping post-merge means an
+# un-landed promotion is simply re-attempted at the next gate run.
+#
 # Why a fork tag instead of ancestry: upstream release tags are cut on release
 # branches, so the release commit is never reachable from main. Testing whether
 # "main contains the release commit" is therefore always false and cannot be
@@ -118,17 +124,7 @@ jobs:
             exit 1
           fi
           echo "PR: $url"
+          # Re-affirming auto-merge on an already-open PR is a no-op, so a slow
+          # merge that spans several gate runs is harmless. The cs-promoted marker
+          # is written by cs-release-mark.yml once this PR merges.
           gh pr merge "$url" --auto --merge
-
-      - name: Record promotion marker (release-cadence idempotency)
-        env:
-          TAG: ${{ needs.detect.outputs.tag }}
-        run: |
-          set -euo pipefail
-          # detect/ skips this release on the next run once this marker exists, so
-          # the same upstream release is not promoted twice. NOTE: auto-merge is
-          # asynchronous -- if the PR is later rejected this marker still stands and
-          # main catches up at the next upstream release rather than re-promoting.
-          git fetch --force origin integration
-          git tag -f "cs-promoted/${TAG}" FETCH_HEAD
-          git push -f origin "refs/tags/cs-promoted/${TAG}"
