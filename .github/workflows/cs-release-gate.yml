@@ -1,7 +1,14 @@
 # contain-security fork: promote integration -> main on a new upstream release.
-# Detects the latest upstream FINAL release tag (vX.Y.Z, no pre-release suffix);
-# if main does not already contain it, validates the integration line and opens
-# an integration -> main PR with auto-merge (lands once required checks pass).
+# Detects the latest upstream FINAL release tag (vX.Y.Z, no pre-release suffix).
+# A release is promotable when (a) integration is actually ahead of main and
+# (b) we have not already promoted for it (tracked by a durable cs-promoted/<ver>
+# fork tag). When promotable, validates the integration line and opens an
+# integration -> main PR with auto-merge (lands once required checks pass).
+#
+# Why a fork tag instead of ancestry: upstream release tags are cut on release
+# branches, so the release commit is never reachable from main. Testing whether
+# "main contains the release commit" is therefore always false and cannot be
+# used to decide that a release has already been promoted.
 name: cs-release-gate
 
 on:
@@ -31,7 +38,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Detect new upstream release
+      - name: Detect promotable upstream release
         id: detect
         env:
           FORCE: ${{ inputs.force }}
@@ -39,18 +46,35 @@ jobs:
           set -euo pipefail
           git remote add upstream https://github.com/openbao/openbao.git || true
           git fetch --tags --force upstream main
+          # Need the fork's integration line for the divergence check below.
+          git fetch --force origin integration:refs/remotes/origin/integration
+
           latest="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
-          echo "latest upstream release: $latest"
+          echo "latest upstream final release: ${latest:-<none>}"
           if [ -z "$latest" ]; then
+            echo "no upstream release tags found; nothing to promote"
             echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          tagsha="$(git rev-list -n1 "$latest")"
-          if [ "$FORCE" != "true" ] && git merge-base --is-ancestor "$tagsha" origin/main; then
-            echo "main already contains $latest; nothing to promote"
-            echo "tag=" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=$latest" >> "$GITHUB_OUTPUT"
+
+          # Nothing to promote unless integration is actually ahead of main.
+          # Guards against opening an empty PR (integration == main -> no diff).
+          ahead="$(git rev-list --count origin/main..origin/integration)"
+          if [ "$ahead" -eq 0 ]; then
+            echo "integration is not ahead of main; nothing to promote"
+            echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
           fi
+
+          # Release-cadence idempotency: cs-promoted/<ver> records that we have
+          # already promoted main for this upstream release. (Ancestry of the
+          # release commit cannot be used -- see the file header.)
+          if [ "$FORCE" != "true" ] && \
+             git ls-remote --exit-code origin "refs/tags/cs-promoted/$latest" >/dev/null 2>&1; then
+            echo "already promoted for $latest (cs-promoted/$latest exists); nothing to promote"
+            echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          echo "promotable: $latest (integration is $ahead commit(s) ahead of main)"
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
 
   validate:
     needs: detect
@@ -79,9 +103,32 @@ jobs:
           TAG: ${{ needs.detect.outputs.tag }}
         run: |
           set -euo pipefail
+          body="Automated promotion of the integration line for upstream release ${TAG}. Auto-merges once required checks pass."
+          # Capture (don't discard) the create error; an existing open PR is the
+          # common reason create fails, so fall back to reusing it.
           url="$(gh pr create --base main --head integration \
-            --title "Release ${TAG}: promote integration to main" \
-            --body "Automated promotion of the integration line for upstream release ${TAG}. Auto-merges once required checks pass." \
-            2>/dev/null || gh pr list --base main --head integration --state open --json url --jq '.[0].url')"
+            --title "Release ${TAG}: promote integration to main 🤖" \
+            --body "$body" 2>pr-create.err)" || true
+          if [ -z "$url" ]; then
+            url="$(gh pr list --base main --head integration --state open --json url --jq '.[0].url')"
+          fi
+          if [ -z "$url" ]; then
+            echo "::error::could not create or find an integration->main PR" >&2
+            cat pr-create.err >&2 || true
+            exit 1
+          fi
           echo "PR: $url"
           gh pr merge "$url" --auto --merge
+
+      - name: Record promotion marker (release-cadence idempotency)
+        env:
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # detect/ skips this release on the next run once this marker exists, so
+          # the same upstream release is not promoted twice. NOTE: auto-merge is
+          # asynchronous -- if the PR is later rejected this marker still stands and
+          # main catches up at the next upstream release rather than re-promoting.
+          git fetch --force origin integration
+          git tag -f "cs-promoted/${TAG}" FETCH_HEAD
+          git push -f origin "refs/tags/cs-promoted/${TAG}"
