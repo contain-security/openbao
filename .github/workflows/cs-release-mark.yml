@@ -1,0 +1,59 @@
+# contain-security fork: record the release-promotion marker once a promotion
+# actually lands on main. cs-release-gate opens integration -> main PRs with
+# auto-merge; because auto-merge is asynchronous, the cs-promoted/<ver> tag is
+# stamped HERE, when the PR truly merges -- so a promotion that is later rejected
+# is retried at the next gate run instead of being silently marked done.
+name: cs-release-mark
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read # the App token below carries write scope
+
+jobs:
+  mark:
+    # Only a promotion PR that actually merged: integration -> main, same repo
+    # (fork PRs get no secrets, so the token mint would fail anyway).
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'integration' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.CS_APP_ID }}
+          private-key: ${{ secrets.CS_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - name: Stamp cs-promoted marker for the merged release
+        env:
+          # Untrusted input -- never interpolate into the script; extract a
+          # strict vX.Y.Z below and use nothing else from it.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          ver="$(printf '%s' "$PR_TITLE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+          if [ -z "$ver" ]; then
+            echo "no vX.Y.Z release version in PR title; nothing to mark"
+            exit 0
+          fi
+          # Point the marker at the merge commit; fall back to main if the event
+          # did not carry a usable merge SHA.
+          git fetch --force origin main
+          target="${MERGE_SHA:-}"
+          if [ -z "$target" ] || ! git cat-file -e "${target}^{commit}" 2>/dev/null; then
+            target="$(git rev-parse FETCH_HEAD)"
+          fi
+          echo "recording cs-promoted/$ver at $target"
+          git tag -f "cs-promoted/$ver" "$target"
+          git push -f origin "refs/tags/cs-promoted/$ver"
