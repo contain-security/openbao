@@ -113,7 +113,7 @@ jobs:
           # Capture (don't discard) the create error; an existing open PR is the
           # common reason create fails, so fall back to reusing it.
           url="$(gh pr create --base main --head integration \
-            --title "Release ${TAG}: promote integration to main 🤖" \
+            --title "Release ${TAG}: promote integration to main" \
             --body "$body" 2>pr-create.err)" || true
           if [ -z "$url" ]; then
             url="$(gh pr list --base main --head integration --state open --json url --jq '.[0].url')"
