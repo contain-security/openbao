@@ -1,0 +1,149 @@
+# contain-security fork: periodic CI-health digest.
+# Runs daily and reports only when there is something actionable outstanding
+# (failed workflow runs in the last ~24h, or open upstream merge-conflict
+# issues). When something is outstanding it upserts a single `cs:health`
+# tracking issue and posts a comment that @-mentions the owner, producing one
+# notification email. When everything is clear it closes that issue (one
+# "resolved" email) and otherwise stays silent -- so the inbox is quiet by
+# default and only surfaces a periodic summary of real problems.
+#
+# Standing Dependabot alerts (largely inherited from upstream) are reported as
+# informational context inside the digest body but never trigger an email on
+# their own, so the unchanging vuln backlog does not spam daily.
+name: cs-health-digest
+
+on:
+  schedule:
+    - cron: "0 13 * * *" # daily 13:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read # the App token below carries the write scope used here
+
+concurrency:
+  group: cs-health-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.CS_APP_ID }}
+          private-key: ${{ secrets.CS_APP_PRIVATE_KEY }}
+
+      - name: Compile and publish health digest
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const SELF = 'cs-health-digest';
+            const HEALTH_LABEL = 'cs:health';
+            const HEALTH_TITLE = '🩺 Fork CI health';
+            const since = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+            const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+
+            // Render plain text (from API data) safely inside a code span so a
+            // crafted run/issue title cannot inject markdown into the digest.
+            const code = (s) => '`' + String(s).replace(/`/g, "'") + '`';
+
+            // 1) Failed workflow runs in the window (exclude this digest itself).
+            let failedRuns = [];
+            try {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+                owner, repo, created: `>=${since}`, per_page: 100,
+              });
+              const bad = ['failure', 'cancelled', 'timed_out', 'startup_failure'];
+              failedRuns = runs.filter((r) => bad.includes(r.conclusion) && r.name !== SELF);
+            } catch (e) { core.warning(`workflow runs: ${e.message}`); }
+
+            // 2) Open upstream merge-conflict issues raised by cs-sync-integrate.
+            let conflicts = [];
+            try {
+              const r = await github.rest.issues.listForRepo({
+                owner, repo, state: 'open', labels: 'cs:merge-conflict',
+              });
+              conflicts = r.data;
+            } catch (e) { core.warning(`conflict issues: ${e.message}`); }
+
+            // 3) Open Dependabot alerts (informational only).
+            let dependabot = null;
+            try {
+              const alerts = await github.paginate('GET /repos/{owner}/{repo}/dependabot/alerts', {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              const sev = {};
+              for (const a of alerts) {
+                const s = a.security_advisory?.severity || a.security_vulnerability?.severity || 'unknown';
+                sev[s] = (sev[s] || 0) + 1;
+              }
+              dependabot = { total: alerts.length, sev };
+            } catch (e) { core.warning(`dependabot alerts: ${e.message}`); }
+
+            // Actionable problem count (Dependabot backlog deliberately excluded).
+            const problems = failedRuns.length + conflicts.length;
+
+            // Build the digest body.
+            const out = [`_Updated ${stamp} by ${SELF}._`, ''];
+            if (failedRuns.length) {
+              out.push(`### ❌ Failed workflow runs (last 24h): ${failedRuns.length}`);
+              for (const r of failedRuns.slice(0, 25)) {
+                const when = new Date(r.created_at).toISOString().slice(0, 16).replace('T', ' ');
+                out.push(`- ${code(r.name)} — ${r.event}, ${r.conclusion}, ${when} UTC — [run](${r.html_url})`);
+              }
+              if (failedRuns.length > 25) out.push(`- …and ${failedRuns.length - 25} more`);
+              out.push('');
+            }
+            if (conflicts.length) {
+              out.push(`### ⚠️ Open upstream merge conflicts: ${conflicts.length}`);
+              for (const c of conflicts) out.push(`- #${c.number} — ${code(c.title)} — [issue](${c.html_url})`);
+              out.push('');
+            }
+            if (!problems) out.push('### ✅ No failed runs or merge conflicts in the last 24h.', '');
+            if (dependabot) {
+              const parts = Object.entries(dependabot.sev).map(([k, v]) => `${v} ${k}`).join(', ') || 'none';
+              out.push(`### 🔐 Open Dependabot alerts: ${dependabot.total} (${parts})`,
+                '_Largely inherited from upstream; informational, not a fork action item._', '');
+            }
+            const body = out.join('\n');
+            core.summary.addRaw(body).write();
+
+            // Upsert the single cs:health tracking issue.
+            const open = (await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: HEALTH_LABEL,
+            })).data;
+
+            if (problems > 0) {
+              let number;
+              if (open.length === 0) {
+                const created = await github.rest.issues.create({
+                  owner, repo, title: HEALTH_TITLE, body,
+                  labels: [HEALTH_LABEL], assignees: [owner],
+                });
+                number = created.data.number;
+              } else {
+                number = open[0].number;
+                await github.rest.issues.update({ owner, repo, issue_number: number, body });
+              }
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number,
+                body: `@${owner} — ${problems} outstanding item(s) as of ${stamp}.\n\n${body}`,
+              });
+              core.notice(`health digest: ${problems} outstanding (issue #${number})`);
+            } else {
+              if (open.length) {
+                await github.rest.issues.update({
+                  owner, repo, issue_number: open[0].number, body, state: 'closed',
+                });
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: open[0].number,
+                  body: `✅ All clear as of ${stamp}. Closing; the next failure will reopen a fresh digest.`,
+                });
+              }
+              core.notice('health digest: all clear');
+            }
