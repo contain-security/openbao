@@ -53,13 +53,27 @@ jobs:
             const code = (s) => '`' + String(s).replace(/`/g, "'") + '`';
 
             // 1) Failed workflow runs in the window (exclude this digest itself).
+            // Two event classes are deliberately NOT counted as actionable:
+            //   - 'dynamic'             : Dependabot updater runs. The vuln backlog
+            //                             is inherited from upstream and reported as
+            //                             informational below; a failing updater run
+            //                             (e.g. pnpm-workspace npm updates) is part of
+            //                             that inherited noise, not a fork action item.
+            //   - 'pull_request' / *_target : transient PR CI, already visible to the
+            //                             PR author. Upstream-inherited checks (Docs CI,
+            //                             Check Changelog, CI) routinely go red on fork
+            //                             infra PRs without gating the fork's required
+            //                             checks, so they must not feed the digest.
+            const IGNORED_EVENTS = new Set(['dynamic', 'pull_request', 'pull_request_target']);
             let failedRuns = [];
             try {
               const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
                 owner, repo, created: `>=${since}`, per_page: 100,
               });
               const bad = ['failure', 'cancelled', 'timed_out', 'startup_failure'];
-              failedRuns = runs.filter((r) => bad.includes(r.conclusion) && r.name !== SELF);
+              failedRuns = runs.filter(
+                (r) => bad.includes(r.conclusion) && r.name !== SELF && !IGNORED_EVENTS.has(r.event),
+              );
             } catch (e) { core.warning(`workflow runs: ${e.message}`); }
 
             // 2) Open upstream merge-conflict issues raised by cs-sync-integrate.
