@@ -48,7 +48,10 @@ jobs:
           git remote add upstream https://github.com/openbao/openbao.git || true
           git fetch --no-tags upstream main
       - name: Fast-forward upstream-mirror
-        run: git push origin upstream/main:refs/heads/upstream-mirror --ff-only || echo "upstream-mirror not fast-forwardable (non-fatal)"
+        # `git push` rejects a non-fast-forward by default (no --force), which is
+        # the fast-forward-only guarantee we want; `git push --ff-only` is not a
+        # real flag (errors with "unknown option `ff-only'") so it is omitted.
+        run: git push origin upstream/main:refs/heads/upstream-mirror || echo "upstream-mirror not fast-forwardable (non-fatal)"
       - name: Merge upstream into integration
         id: merge
         env:
