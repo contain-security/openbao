@@ -91,7 +91,7 @@ jobs:
           package_json_file: ui/package.json
 
       - name: Set up UI cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: http/web_ui/
           key: ${{ github.ref }}-ui
@@ -145,7 +145,7 @@ jobs:
         uses: ./.github/actions/set-up-go
 
       - name: Set up UI cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: http/web_ui/
           key: ${{ github.ref }}-ui
@@ -157,7 +157,7 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Install GoReleaser
-        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           install-only: true
           version: v2.16.0
@@ -231,7 +231,7 @@ jobs:
           package_json_file: ui/package.json
 
       - name: Set up UI cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: http/web_ui/
           key: ${{ github.ref }}-ui
