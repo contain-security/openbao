@@ -4,6 +4,7 @@
 package http
 
 import (
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -288,7 +289,7 @@ func buildLogicalRequest(core *vault.Core, w http.ResponseWriter, r *http.Reques
 		return nil, http.StatusBadRequest, fmt.Errorf("error parsing X-Vault-Wrap-TTL header: %w", err)
 	}
 
-	err = parseMFAHeader(req)
+	err = req.ParseMFAHeaders()
 	if err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("failed to parse X-Vault-MFA header: %w", err)
 	}
@@ -327,8 +328,10 @@ func handleLogicalRecovery(raw *vault.RawBackend, token *atomic.Value) http.Hand
 			respondError(w, statusCode, err)
 			return
 		}
+
 		reqToken := r.Header.Get(consts.AuthHeaderName)
-		if reqToken == "" || token.Load() == "" || reqToken != token.Load() {
+		rToken, rTokenOk := token.Load().(string)
+		if len(reqToken) == 0 || !rTokenOk || len(rToken) == 0 || subtle.ConstantTimeCompare([]byte(reqToken), []byte(rToken)) == 0 {
 			respondError(w, http.StatusForbidden, nil)
 			return
 		}
