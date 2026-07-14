@@ -2522,12 +2522,12 @@ func (b *SystemBackend) handlePoliciesRead(policyType policy.Type) framework.Ope
 
 func readPolicyResponse(policy *policy.Policy) map[string]interface{} {
 	data := map[string]interface{}{
-		"name":                             policy.Name,
-		"version":                          policy.DataVersion,
-		"cas_required":                     policy.CASRequired,
-		"policy":                           policy.Raw,
-		"allow_wildcards_in_substitutions": policy.AllowWildcardsInSubstitutions,
-		"allow_slashes_in_substitutions":   policy.AllowSlashesInSubstitutions,
+		"name":                                  policy.Name,
+		"version":                               policy.DataVersion,
+		"cas_required":                          policy.CASRequired,
+		"policy":                                policy.Raw,
+		"allow_wildcards_in_identity_templates": policy.AllowWildcardsInIdentityTemplates,
+		"allow_slashes_in_identity_templates":   policy.AllowSlashesInIdentityTemplates,
 	}
 
 	if !policy.Expiration.IsZero() {
@@ -2618,8 +2618,8 @@ func (b *SystemBackend) handlePoliciesSet(policyType policy.Type) framework.Oper
 		casRequired := data.Get("cas_required").(bool)
 		pol.CASRequired = casRequired
 
-		pol.AllowWildcardsInSubstitutions = data.Get("allow_wildcards_in_substitutions").(bool)
-		pol.AllowSlashesInSubstitutions = data.Get("allow_slashes_in_substitutions").(bool)
+		pol.AllowWildcardsInIdentityTemplates = data.Get("allow_wildcards_in_identity_templates").(bool)
+		pol.AllowSlashesInIdentityTemplates = data.Get("allow_slashes_in_identity_templates").(bool)
 
 		// Update the policy
 		if err := b.Core.policyStore.SetPolicy(ctx, pol, cas); err != nil {
@@ -4511,33 +4511,6 @@ func (b *SystemBackend) handleLeaderStatus(ctx context.Context, req *logical.Req
 		},
 	}
 	return httpResp, nil
-}
-
-func (b *SystemBackend) rotateBarrierKey(ctx context.Context) error {
-	// Rotate to the new term
-	newTerm, err := b.Core.barrier.Rotate(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create new encryption key: %w", err)
-	}
-	b.Backend.Logger().Info("installed new encryption key")
-
-	// In HA mode, we need to an upgrade path for the standby instances
-	if b.Core.ha != nil && b.Core.KeyRotateGracePeriod() > 0 {
-		// Create the upgrade path to the new term
-		if err := b.Core.barrier.CreateUpgrade(ctx, newTerm); err != nil {
-			b.Backend.Logger().Error("failed to create new upgrade", "term", newTerm, "error", err)
-		}
-
-		// Schedule the destroy of the upgrade path
-		time.AfterFunc(b.Core.KeyRotateGracePeriod(), func() {
-			b.Backend.Logger().Debug("cleaning up upgrade keys", "waited", b.Core.KeyRotateGracePeriod())
-			if err := b.Core.barrier.DestroyUpgrade(b.Core.activeContext.Load(), newTerm); err != nil {
-				b.Backend.Logger().Error("failed to destroy upgrade", "term", newTerm, "error", err)
-			}
-		})
-	}
-
-	return nil
 }
 
 func (b *SystemBackend) handleHAStatus(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
