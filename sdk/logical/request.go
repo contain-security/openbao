@@ -5,13 +5,16 @@ package logical
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/mitchellh/copystructure"
+	"github.com/openbao/openbao/sdk/v2/helper/consts"
 )
 
 // RequestWrapInfo is a struct that stores information about desired response
@@ -377,6 +380,33 @@ const (
 	RollbackOperation Operation = "rollback"
 )
 
+// ValidateOperation will verify the given Operation(s) are supported
+func ValidateOperation(vals ...Operation) error {
+	ops := []Operation{
+		CreateOperation,
+		ReadOperation,
+		UpdateOperation,
+		PatchOperation,
+		DeleteOperation,
+		ListOperation,
+		ScanOperation,
+		HelpOperation,
+		AliasLookaheadOperation,
+		ResolveRoleOperation,
+		HeaderOperation,
+		RevokeOperation,
+		RenewOperation,
+		RollbackOperation,
+	}
+	for _, val := range vals {
+		if !slices.Contains(ops, val) {
+			return fmt.Errorf("Operation(s) not valid: %v", val)
+		}
+	}
+
+	return nil
+}
+
 type MFACreds map[string][]string
 
 // InitializationRequest stores the parameters and context of an Initialize()
@@ -412,4 +442,67 @@ func ContextOriginalBodyValue(ctx context.Context) (io.ReadCloser, bool) {
 
 func CreateContextOriginalBody(parent context.Context, body io.ReadCloser) context.Context {
 	return context.WithValue(parent, ctxKeyOriginalBody{}, body)
+}
+
+func (req *Request) CanonicalizeHeaders() {
+	if req == nil {
+		return
+	}
+
+	canonicalized := make(map[string][]string, len(req.Headers))
+	for name, value := range req.Headers {
+		canonicalized[http.CanonicalHeaderKey(name)] = value
+	}
+
+	req.Headers = canonicalized
+}
+
+// canonicalMFAHeaderName is the MFA header value's format in the request
+// headers. Do not alter the casing of this string.
+var canonicalMFAHeaderName = http.CanonicalHeaderKey(consts.MFAHeaderName)
+
+// ParseMFAHeader parses the MFAHeaderName in the request headers and organizes
+// them with MFA method name as the index.
+func (req *Request) ParseMFAHeaders() error {
+	if req == nil {
+		return errors.New("request is nil")
+	}
+
+	if req.Headers == nil {
+		return nil
+	}
+
+	// Reset and initialize the credentials in the request
+	req.MFACreds = make(map[string][]string)
+
+	for _, mfaHeaderValue := range req.Headers[canonicalMFAHeaderName] {
+		// Skip the header with no value in it
+		if mfaHeaderValue == "" {
+			continue
+		}
+
+		// Handle the case where only method name is mentioned and no value
+		// is supplied
+		if !strings.Contains(mfaHeaderValue, ":") {
+			// Mark the presence of method name, but set an empty set to it
+			// indicating that there were no values supplied for the method
+			if req.MFACreds[mfaHeaderValue] == nil {
+				req.MFACreds[mfaHeaderValue] = []string{}
+			}
+			continue
+		}
+
+		shardSplits := strings.SplitN(mfaHeaderValue, ":", 2)
+		if shardSplits[0] == "" {
+			return fmt.Errorf("invalid data in header %q; missing method name or ID", consts.MFAHeaderName)
+		}
+
+		if shardSplits[1] == "" {
+			return fmt.Errorf("invalid data in header %q; missing method value", consts.MFAHeaderName)
+		}
+
+		req.MFACreds[shardSplits[0]] = append(req.MFACreds[shardSplits[0]], shardSplits[1])
+	}
+
+	return nil
 }

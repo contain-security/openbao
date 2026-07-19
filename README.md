@@ -1,3 +1,26 @@
+## NOTICE — independent fork
+
+> [!IMPORTANT]
+> This repository is an **independent fork** of
+> [OpenBao](https://github.com/openbao/openbao), maintained by
+> contain-security. Its sole purpose is to **enable a Consul storage
+> backend** (and Consul service registration), functionality that was
+> removed from the upstream project.
+>
+> This fork is **not part of, endorsed by, or directly associated with
+> the OpenBao project**. For the official project, visit
+> [openbao.org](https://www.openbao.org) or
+> [github.com/openbao/openbao](https://github.com/openbao/openbao).
+>
+> Please report issues with the Consul functionality **here**, not to
+> the upstream project. See [CONSUL_FORK.md](CONSUL_FORK.md) for how the
+> fork is structured, its status and warnings, and how it stays in sync
+> with upstream.
+
+The original upstream README follows unmodified below.
+
+----
+
 # OpenBao
 
 ----

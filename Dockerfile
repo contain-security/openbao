@@ -17,7 +17,7 @@ FROM scratch AS bin
 ARG TARGETARCH
 COPY --chmod=555 bin/${TARGETARCH}/bao /usr/bin/bao
 
-# This is {docker.io,quay.io,ghcr.io}/openbao/openbao{,-hsm}.
+# This is {docker.io,quay.io,ghcr.io}/openbao/openbao.
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS default
 
 COPY LICENSE /licenses/mozilla.txt
@@ -66,10 +66,15 @@ ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["server", "-dev", "-dev-no-store-token"]
 
 
-# This is {docker.io,quay.io,ghcr.io}/openbao/openbao{,-hsm}-ubi.
-FROM registry.access.redhat.com/ubi10-minimal:10.2@sha256:3948fdfe71007909b37faf48c52eda28bfab7c4e440d6f4d4619422d06ceeb4c AS ubi
+# This is {docker.io,quay.io,ghcr.io}/openbao/openbao-ubi.
+FROM registry.access.redhat.com/ubi10-minimal:10.2@sha256:b217fa65d8c21058887b18f005f587e47a17dd1281a5196ac88d01724a273dbd AS ubi
 
 COPY LICENSE /licenses/mozilla.txt
+
+# Overwrite Red Hat-specific labels present on the UBI base image.
+LABEL io.k8s.description="OpenBao is a tool for securely accessing secrets" \
+      io.k8s.display-name="OpenBao" \
+      io.openshift.expose-services="8200/tcp:https"
 
 # Set up ca-certificates & base tooling.
 RUN microdnf install -y ca-certificates gnupg openssl libcap tzdata procps shadow-utils util-linux
@@ -123,7 +128,7 @@ CMD ["server", "-dev", "-dev-no-store-token"]
 
 
 # This is {docker.io,quay.io,ghcr.io}/openbao/openbao-distroless.
-FROM gcr.io/distroless/static:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb01479f054c8056d0f74cc2c6000df5240 AS distroless
+FROM gcr.io/distroless/static:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6 AS distroless
 
 COPY LICENSE /licenses/mozilla.txt
 
