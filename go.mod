@@ -1,4 +1,4 @@
-module github.com/openbao/openbao
+module github.com/openbao/openbao/v2
 
 // The go version directive value isn't consulted when building our production binaries,
 // and the vault module isn't intended to be imported into other projects.  As such the
@@ -9,7 +9,7 @@ module github.com/openbao/openbao
 // updated. If we choose not to do so at some point (e.g. because we don't want some new
 // semantic related to Go module handling), this comment should be updated to explain that.
 
-go 1.25.8
+go 1.26.0
 
 replace github.com/openbao/openbao/api/v2 => ./api
 
@@ -21,7 +21,7 @@ replace github.com/openbao/openbao/api/auth/userpass/v2 => ./api/auth/userpass
 
 replace github.com/openbao/openbao/sdk/v2 => ./sdk
 
-replace github.com/boltdb/bolt => ./helper/stubbolt
+replace github.com/boltdb/bolt => ./internal/helper/stubbolt
 
 require (
 	cloud.google.com/go/monitoring v1.29.0
@@ -83,7 +83,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/jefferai/isbadcipher v0.0.0-20190226160619-51d2077c035f
-	github.com/klauspost/compress v1.18.7
+	github.com/klauspost/compress v1.19.0
 	github.com/kr/pretty v0.3.1
 	github.com/kr/text v0.2.0
 	github.com/mattn/go-colorable v0.1.15
@@ -100,8 +100,9 @@ require (
 	github.com/moby/moby/client v0.5.0
 	github.com/oklog/run v1.2.0
 	github.com/okta/okta-sdk-golang/v2 v2.20.0
-	github.com/openbao/go-kms-wrapping/plugin/v2 v2.3.0
-	github.com/openbao/go-kms-wrapping/v2 v2.8.0
+	github.com/openbao/go-kms-wrapping/kms/transit/v2 v2.0.0-20260626131931-998c8a6f17f4
+	github.com/openbao/go-kms-wrapping/plugin/v2 v2.3.1-0.20260626131931-998c8a6f17f4
+	github.com/openbao/go-kms-wrapping/v2 v2.8.1-0.20260626131931-998c8a6f17f4
 	github.com/openbao/go-kms-wrapping/wrappers/kmip/v2 v2.2.0
 	github.com/openbao/go-kms-wrapping/wrappers/static/v2 v2.2.0
 	github.com/openbao/go-kms-wrapping/wrappers/transit/v2 v2.8.0
@@ -111,7 +112,7 @@ require (
 	github.com/openbao/openbao/api/v2 v2.6.0
 	github.com/openbao/openbao/sdk/v2 v2.6.0
 	github.com/ory/dockertest/v4 v4.0.0
-	github.com/pires/go-proxyproto v0.12.0
+	github.com/pires/go-proxyproto v0.14.0
 	github.com/posener/complete v1.2.3
 	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.23.2
@@ -135,12 +136,12 @@ require (
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96
 	golang.org/x/net v0.56.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sync v0.21.0
-	golang.org/x/sys v0.46.0
+	golang.org/x/sync v0.22.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.44.0
-	golang.org/x/text v0.38.0
-	google.golang.org/api v0.286.0
-	google.golang.org/grpc v1.81.1
+	golang.org/x/text v0.39.0
+	google.golang.org/api v0.287.0
+	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/jcmturner/goidentity.v3 v3.0.0
 	k8s.io/api v0.35.4
@@ -238,7 +239,7 @@ require (
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
+	github.com/googleapis/enterprise-certificate-proxy v0.3.17 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/gophercloud/gophercloud v0.1.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
@@ -331,10 +332,10 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.46.0 // indirect
+	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260610212136-7ab31c22f7ad // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260622175928-b703f567277d // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
@@ -346,5 +347,3 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 )
-
-retract [v0.1.0, v1.17.0]

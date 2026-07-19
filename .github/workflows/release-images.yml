@@ -118,7 +118,7 @@ jobs:
           IMAGE_NAME: ${{ github.repository_owner }}/${{ matrix.distro.name }}${{ case(contains(env.VERSION, 'nightly'), '-nightly', '') }}
 
       - name: Log into ghcr.io
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         if: contains(fromJSON(steps.tags.outputs.registries), 'ghcr.io')
         with:
           registry: ghcr.io
@@ -126,7 +126,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log into docker.io
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         if: contains(fromJSON(steps.tags.outputs.registries), 'docker.io')
         with:
           registry: docker.io
@@ -134,7 +134,7 @@ jobs:
           password: ${{ secrets.DOCKER_TOKEN }}
 
       - name: Log into quay.io
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         if: contains(fromJSON(steps.tags.outputs.registries), 'quay.io')
         with:
           registry: quay.io
@@ -154,10 +154,11 @@ jobs:
         run: |
           echo "sha=$(git rev-parse "$VERSION")" >> "$GITHUB_OUTPUT"
           echo "epoch=$(git log -1 --format=%ct "$VERSION")" >> "$GITHUB_OUTPUT"
+          echo "date=$(TZ=UTC git log -1 --format=%cd --date=iso-strict-local "$VERSION")" >> "$GITHUB_OUTPUT"
 
       - name: Build and push images
         id: build
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: true
@@ -166,9 +167,24 @@ jobs:
           platforms: ${{ join(matrix.distro.platforms, ',') }}
           outputs: type=registry,rewrite-timestamp=true
           build-args: SOURCE_DATE_EPOCH=${{ steps.info.outputs.epoch }}
+          # We add both "legacy" non-namespaced labels and OCI-standardized
+          # labels. Legacy labels are primarily required for Red Hat to certify
+          # images based on UBI, but it does not harm to add them to all
+          # distributions.
           labels: |
+            name=OpenBao
+            maintainer=OpenBao <openbao@lists.openssf.org>
+            vendor=OpenBao
+            version=${{ env.VERSION }}
+            release=${{ steps.info.outputs.epoch }}
+            build-date=${{ steps.info.outputs.date }}
+            summary=OpenBao is a tool for securely accessing secrets
+            description=OpenBao is a tool for securely accessing secrets. A secret is anything that you want to tightly control access to, such as API keys, passwords, certificates, and more. OpenBao provides a unified interface to any secret, while providing tight access control and recording a detailed audit log
+            url=https://openbao.org
+            vcs-ref=${{ steps.info.outputs.sha }}
+            vcs-type=git
             org.opencontainers.image.authors=OpenBao <openbao@lists.openssf.org>
-            org.opencontainers.image.url=https://github.com/openbao/openbao
+            org.opencontainers.image.url=https://openbao.org
             org.opencontainers.image.documentation=https://github.com/openbao/openbao/blob/main/README.md
             org.opencontainers.image.source=https://github.com/openbao/openbao
             org.opencontainers.image.version=${{ env.VERSION }}

@@ -56,7 +56,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           go test -count=1 -timeout 20m -run Consul \
-            ./physical/consul/... ./serviceregistration/consul/...
+            ./internal/physical/consul/... ./internal/serviceregistration/consul/...
 
   testbed:
     # GPG plugin cross-checks against bao built from the candidate ref.

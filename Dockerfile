@@ -71,6 +71,11 @@ FROM registry.access.redhat.com/ubi10-minimal:10.2@sha256:b217fa65d8c21058887b18
 
 COPY LICENSE /licenses/mozilla.txt
 
+# Overwrite Red Hat-specific labels present on the UBI base image.
+LABEL io.k8s.description="OpenBao is a tool for securely accessing secrets" \
+      io.k8s.display-name="OpenBao" \
+      io.openshift.expose-services="8200/tcp:https"
+
 # Set up ca-certificates & base tooling.
 RUN microdnf install -y ca-certificates gnupg openssl libcap tzdata procps shadow-utils util-linux
 
@@ -123,7 +128,7 @@ CMD ["server", "-dev", "-dev-no-store-token"]
 
 
 # This is {docker.io,quay.io,ghcr.io}/openbao/openbao-distroless.
-FROM gcr.io/distroless/static:nonroot@sha256:d29e660cc75a5b6b1334e03c5c81ccf9bc0884a002c6000dbf0fb96034814478 AS distroless
+FROM gcr.io/distroless/static:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6 AS distroless
 
 COPY LICENSE /licenses/mozilla.txt
 
