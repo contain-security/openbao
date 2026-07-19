@@ -26,7 +26,7 @@ func testHTTPServer(
 	}
 
 	server := &http.Server{Handler: handler}
-	go server.Serve(ln)
+	go func() { _ = server.Serve(ln) }()
 
 	config := api.DefaultConfig()
 	config.Address = fmt.Sprintf("http://%s", ln.Addr())
@@ -35,8 +35,8 @@ func testHTTPServer(
 }
 
 func init() {
-	os.Setenv("BAO_TOKEN", "")
-	os.Setenv("VAULT_TOKEN", "")
+	_ = os.Setenv("BAO_TOKEN", "")
+	_ = os.Setenv("VAULT_TOKEN", "")
 }
 
 func TestLogin(t *testing.T) {
@@ -48,7 +48,7 @@ func TestLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error creating temp file: %v", err)
 	}
-	defer os.Remove(tmpfile.Name()) // clean up
+	defer func() { _ = os.Remove(tmpfile.Name()) }() // clean up
 	err = os.Setenv(passwordEnvVar, allowedPassword)
 	if err != nil {
 		t.Fatalf("error writing password to env var: %v", err)
@@ -80,12 +80,12 @@ func TestLogin(t *testing.T) {
 			t.Fatalf("error decoding json: %v", err)
 		}
 		if payload["password"] == allowedPassword {
-			w.Write(authBytes)
+			_, _ = w.Write(authBytes)
 		}
 	}
 
 	config, ln := testHTTPServer(t, http.HandlerFunc(handler))
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	config.Address = strings.ReplaceAll(config.Address, "127.0.0.1", "localhost")
 	client, err := api.NewClient(config)
