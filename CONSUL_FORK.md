@@ -17,11 +17,13 @@ support that was removed upstream**:
 
 Registration is injected **additively** via [`internal/command/commands_consul.go`](internal/command/commands_consul.go) —
 an `init()` that appends `"consul"` to the `physicalBackends` and `serviceRegistrations` maps. This
-keeps `internal/command/commands.go` and `README.md` byte-identical to upstream, so upstream syncs do not
-conflict on them. All other Consul code lives at paths that do not exist upstream
+keeps `internal/command/commands.go` byte-identical to upstream, so upstream syncs do not
+conflict on it. All other Consul code lives at paths that do not exist upstream
 (`internal/physical/consul/*`, `internal/serviceregistration/consul/*`), so they never conflict either.
 
-The only fork-modified files shared with upstream are `go.mod` / `go.sum`, handled below.
+The fork-modified files shared with upstream are `go.mod` / `go.sum` (handled below) and
+`README.md`, which carries a fork NOTICE prepended above the untouched upstream content —
+a pure top-of-file insertion, so it only conflicts if upstream edits its own first lines.
 
 ## Upstream sync / merge procedure
 
