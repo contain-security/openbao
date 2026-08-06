@@ -54,7 +54,7 @@ require (
 	github.com/hashicorp/go-discover v1.3.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-memdb v1.3.5
-	github.com/hashicorp/go-metrics v0.6.0
+	github.com/hashicorp/go-metrics v0.6.1
 	github.com/hashicorp/go-msgpack v0.5.5
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hashicorp/go-plugin v1.8.0
@@ -87,7 +87,7 @@ require (
 	github.com/kr/pretty v0.3.1
 	github.com/kr/text v0.2.0
 	github.com/mattn/go-colorable v0.1.15
-	github.com/mattn/go-isatty v0.0.23
+	github.com/mattn/go-isatty v0.0.24
 	github.com/mediocregopher/radix/v4 v4.1.5
 	github.com/mholt/acmez/v3 v3.1.6
 	github.com/michaelklishin/rabbit-hole/v3 v3.5.0
@@ -115,7 +115,7 @@ require (
 	github.com/pires/go-proxyproto v0.14.0
 	github.com/posener/complete v1.2.3
 	github.com/pquerna/otp v1.5.0
-	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/common v0.70.1
 	github.com/rboyer/safeio v0.2.3
 	github.com/ryanuber/columnize v2.1.2+incompatible
@@ -299,7 +299,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/procfs v0.21.0 // indirect
+	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/renier/xmlrpc v0.0.0-20170708154548-ce4a1a486c03 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/shopspring/decimal v1.3.1 // indirect
