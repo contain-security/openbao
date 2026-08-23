@@ -1,0 +1,59 @@
+# contain-security fork: lint gate for fork-owned code.
+#
+# Upstream's "Run linters" workflow cannot gate this fork's automated
+# integration->main promotion PRs: their diffs regularly exceed the GitHub
+# API's 300-file limit, so golangci-lint-action's only-new-issues mode gets
+# an HTTP 406 and degrades to linting the entire tree, failing on upstream's
+# own pre-existing issues. This workflow replaces it as the required check on
+# main by linting only the packages this fork owns, with the same golangci-lint
+# version and repository config upstream uses — deterministic on any PR size.
+#
+# --tests=false: the fork-owned test files still carry upstream's inherited
+# lint debt (errcheck/modernize); the cleanup rides with the in-flight consul
+# test work. Drop the flag once those land lint-clean.
+#
+# FORK_PACKAGES must be kept in sync with the fork's Go surface (the packages
+# that differ from upstream/main). Same maintenance pattern as the consul test
+# paths hardcoded in cs-validate.reusable.yml.
+name: cs-lint
+
+on:
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}-cs-lint
+  cancel-in-progress: true
+
+jobs:
+  cs-lint:
+    name: cs-lint
+    runs-on: ubuntu-latest
+    env:
+      # Keep in lockstep with GOLANGCI_LINT_VERSION in upstream's
+      # code-checker.yml so .golangci.yml stays parseable.
+      GOLANGCI_LINT_VERSION: 2.13.1
+      GOLANGCI_LINT_SHA256: b17bfbc9d4aaa48be7f4f1ce3240bc3d8200c870c072bacf15c26219e2cfb9cc
+      FORK_PACKAGES: >-
+        ./internal/physical/consul/...
+        ./internal/serviceregistration/consul/...
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/set-up-go
+      - name: Install golangci-lint (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfLo golangci-lint.tar.gz \
+            "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz"
+          sha256sum -c <<< "${GOLANGCI_LINT_SHA256}  golangci-lint.tar.gz"
+          tar -xzf golangci-lint.tar.gz
+          rm golangci-lint.tar.gz
+      - name: Lint fork-owned packages
+        run: |
+          set -euo pipefail
+          "./golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint" run --tests=false ${FORK_PACKAGES}
