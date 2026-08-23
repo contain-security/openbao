@@ -93,9 +93,9 @@ func TestConsulBackend_BASIC_List(t *testing.T) {
 	ctx := context.Background()
 
 	// Clean up any existing test data
-	backend.Delete(ctx, "list-test/key1")
-	backend.Delete(ctx, "list-test/key2")
-	backend.Delete(ctx, "list-test/subdir/key3")
+	_ = backend.Delete(ctx, "list-test/key1")
+	_ = backend.Delete(ctx, "list-test/key2")
+	_ = backend.Delete(ctx, "list-test/subdir/key3")
 
 	// Create test data
 	testEntries := []*physical.Entry{
@@ -124,7 +124,7 @@ func TestConsulBackend_BASIC_List(t *testing.T) {
 
 	// Clean up
 	for _, entry := range testEntries {
-		backend.Delete(ctx, entry.Key)
+		_ = backend.Delete(ctx, entry.Key)
 	}
 }
 
@@ -141,13 +141,13 @@ func TestConsulBackend_BASIC_ConcurrentOperations(t *testing.T) {
 	// Test concurrent writes
 	done := make(chan bool, 10)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		go func(id int) {
 			defer func() { done <- true }()
 
 			entry := &physical.Entry{
 				Key:   fmt.Sprintf("concurrent/key%d", id),
-				Value: []byte(fmt.Sprintf("value%d", id)),
+				Value: fmt.Appendf(nil, "value%d", id),
 			}
 
 			err := backend.Put(ctx, entry)
@@ -170,7 +170,7 @@ func TestConsulBackend_BASIC_ConcurrentOperations(t *testing.T) {
 
 	// Wait for all goroutines
 	timeout := time.After(10 * time.Second)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		select {
 		case <-done:
 			// Good
@@ -180,8 +180,8 @@ func TestConsulBackend_BASIC_ConcurrentOperations(t *testing.T) {
 	}
 
 	// Clean up
-	for i := 0; i < 10; i++ {
-		backend.Delete(ctx, fmt.Sprintf("concurrent/key%d", i))
+	for i := range 10 {
+		_ = backend.Delete(ctx, fmt.Sprintf("concurrent/key%d", i))
 	}
 }
 
@@ -224,9 +224,9 @@ func TestConsulBackend_BASIC_ListPage_Pattern1_SimplePagination(t *testing.T) {
 	// Create test data
 	numEntries := 15
 	var expectedFullKeys []string
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		key := fmt.Sprintf("%skey%02d", testPrefix, i)
-		entry := &physical.Entry{Key: key, Value: []byte(fmt.Sprintf("value%02d", i))}
+		entry := &physical.Entry{Key: key, Value: fmt.Appendf(nil, "value%02d", i)}
 		err = backend.Put(ctx, entry)
 		if err != nil {
 			t.Fatalf("Put failed for %s: %v", key, err)

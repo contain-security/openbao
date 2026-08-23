@@ -31,8 +31,8 @@ func consulRequired() bool { return os.Getenv(envConsulRequire) == "1" }
 // stripScheme removes a leading http(s):// so a CONSUL_HTTP_ADDR like
 // "http://host:8500" can be used directly as the backend "address".
 func stripScheme(a string) string {
-	if i := strings.Index(a, "://"); i >= 0 {
-		return a[i+3:]
+	if _, after, ok := strings.Cut(a, "://"); ok {
+		return after
 	}
 	return a
 }
@@ -63,7 +63,7 @@ func probeTCP(addr string) error {
 }
 
 // failOrSkip fails the test when OPENBAO_CONSUL_TEST=1, otherwise skips it.
-func failOrSkip(t *testing.T, format string, args ...interface{}) {
+func failOrSkip(t *testing.T, format string, args ...any) {
 	t.Helper()
 	if consulRequired() {
 		t.Fatalf(format, args...)

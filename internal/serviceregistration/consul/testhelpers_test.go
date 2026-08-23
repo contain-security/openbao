@@ -25,8 +25,8 @@ const (
 func consulRequired() bool { return os.Getenv(envConsulRequire) == "1" }
 
 func stripScheme(a string) string {
-	if i := strings.Index(a, "://"); i >= 0 {
-		return a[i+3:]
+	if _, after, ok := strings.Cut(a, "://"); ok {
+		return after
 	}
 	return a
 }
@@ -46,7 +46,7 @@ func probeTCP(addr string) error {
 	return c.Close()
 }
 
-func failOrSkip(t *testing.T, format string, args ...interface{}) {
+func failOrSkip(t *testing.T, format string, args ...any) {
 	t.Helper()
 	if consulRequired() {
 		t.Fatalf(format, args...)

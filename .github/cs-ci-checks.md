@@ -63,9 +63,10 @@ flowchart TD
 
 > Maintenance: `FORK_PACKAGES` in cs-lint.yml must list every Go package where
 > the fork differs from upstream (same pattern as the test paths in
-> cs-validate.reusable.yml). Currently runs with `--tests=false`: the fork's
-> test files still carry upstream's inherited lint debt; drop the flag once the
-> in-flight consul test cleanup lands.
+> cs-validate.reusable.yml). Test files are in scope: the fork's consul tests
+> were cleared of the inherited errcheck/modernize debt, so the gate runs
+> without `--tests=false`. New test files landing in those packages via an
+> upstream merge must therefore be lint-clean too.
 
 ### cs-dependency-review — hard gate for humans, advisory for promotions
 

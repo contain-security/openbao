@@ -396,8 +396,8 @@ func (c *TestableConsulBackend) List(ctx context.Context, prefix string) ([]stri
 		c.logger.Debug("DEBUG: Processing key", "iteration", i, "consul_key", consulKey, "openbao_key", openBaoKey)
 
 		// Remove the prefix to get relative key
-		if strings.HasPrefix(openBaoKey, prefix) {
-			relativeKey := strings.TrimPrefix(openBaoKey, prefix)
+		if after, ok := strings.CutPrefix(openBaoKey, prefix); ok {
+			relativeKey := after
 			if relativeKey != "" {
 				result = append(result, relativeKey)
 				c.logger.Debug("DEBUG: Added key to result", "relative_key", relativeKey)
@@ -688,27 +688,29 @@ func TestConsulBackend_List_ContextCancellation(t *testing.T) {
 
 		// Create a large number of keys to process - ensure they have the correct format
 		largeKeySet := make([]string, 1000)
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			// Fix: use i instead of rune(i) for proper key naming
 			largeKeySet[i] = backend.consulKey("test/key-" + fmt.Sprintf("%d", i))
 		}
 
 		t.Logf("Created %d test keys, first few: %v", len(largeKeySet), largeKeySet[:3])
 
-		// Mock the Keys call to return immediately but with many keys
-		mockKV.On("Keys", "test/test/", "", mock.AnythingOfType("*api.QueryOptions")).Return(
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Cancel the context from inside the Keys call, so it is already
+		// cancelled when key processing starts. Racing a sleeping goroutine
+		// against the processing loop is flaky: on a fast runner the loop
+		// finishes all 1000 keys before the cancel lands and List returns
+		// them with a nil error.
+		mockKV.On("Keys", "test/test/", "", mock.AnythingOfType("*api.QueryOptions")).Run(
+			func(mock.Arguments) {
+				t.Logf("Cancelling context from within Keys call")
+				cancel()
+			},
+		).Return(
 			largeKeySet, &api.QueryMeta{}, nil,
 		)
-
-		// Create context that will be cancelled during key processing
-		ctx, cancel := context.WithCancel(context.Background())
-
-		// Cancel after a very short time to trigger cancellation during processing
-		go func() {
-			time.Sleep(1 * time.Millisecond)
-			t.Logf("Cancelling context after 1ms")
-			cancel()
-		}()
 
 		t.Logf("Starting List operation that should be cancelled during processing")
 
@@ -787,7 +789,7 @@ func BenchmarkConsulBackend_List_WithCancellationChecks(b *testing.B) {
 
 	// Create a moderate number of keys for realistic benchmarking
 	keySet := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		keySet[i] = backend.consulKey("benchmark/key-" + string(rune(i)))
 	}
 

@@ -2,6 +2,7 @@ package consul
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -225,10 +226,5 @@ func TestConsulServiceRegistration_Register_Live(t *testing.T) {
 }
 
 func containsString(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }

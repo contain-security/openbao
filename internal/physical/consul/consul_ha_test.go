@@ -101,7 +101,7 @@ func TestConsulBackend_HA_BasicLocking(t *testing.T) {
 
 	// Verify lock is no longer held (with brief retry for eventual consistency)
 	// var held bool
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		held, _, err = lock.Value()
 		if err != nil {
 			t.Fatalf("Failed to check lock value after unlock: %v", err)
@@ -195,7 +195,7 @@ func TestConsulBackend_HA_ConcurrentLocking(t *testing.T) {
 		time.Sleep(2 * time.Second)
 
 		// Release lock
-		lock.Unlock()
+		_ = lock.Unlock()
 		close(stopCh)
 
 		// Wait for leadership loss signal
@@ -233,7 +233,7 @@ func TestConsulBackend_HA_ConcurrentLocking(t *testing.T) {
 
 		// Hold briefly then release
 		time.Sleep(500 * time.Millisecond)
-		lock.Unlock()
+		_ = lock.Unlock()
 		<-leaderCh
 	}()
 
@@ -403,7 +403,7 @@ func TestConsulBackend_HA_LockContention(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Create multiple contenders
-	for i := 0; i < numContenders; i++ {
+	for i := range numContenders {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -437,7 +437,7 @@ func TestConsulBackend_HA_LockContention(t *testing.T) {
 			time.Sleep(500 * time.Millisecond)
 
 			// Release it
-			lock.Unlock()
+			_ = lock.Unlock()
 			close(stopCh)
 			<-leaderCh
 
@@ -513,7 +513,7 @@ func TestConsulBackend_HA_LockValue(t *testing.T) {
 	}
 
 	// Release and verify
-	lock.Unlock()
+	_ = lock.Unlock()
 	close(stopCh)
 	<-leaderCh
 

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"maps"
 	"math/big"
 	"net"
 	"os"
@@ -151,7 +152,7 @@ func createTestServerCert(t *testing.T, caCert *x509.Certificate, caKey *rsa.Pri
 func writeTempFile(t *testing.T, content []byte, suffix string) string {
 	tmpFile, err := os.CreateTemp("", "consul-test-*"+suffix)
 	require.NoError(t, err)
-	defer tmpFile.Close()
+	defer func() { _ = tmpFile.Close() }()
 
 	_, err = tmpFile.Write(content)
 	require.NoError(t, err)
@@ -167,7 +168,7 @@ func TestConsulBackend_TLS_TLSWithCA(t *testing.T) {
 
 	// Write CA cert to temp file
 	caCertFile := writeTempFile(t, caCertPEM, ".crt")
-	defer os.Remove(caCertFile)
+	defer func() { _ = os.Remove(caCertFile) }()
 
 	conf := map[string]string{
 		"address":     "127.0.0.1:9999", // Use non-existent port
@@ -334,7 +335,7 @@ func TestConsulBackend_TLS_TLSWithInvalidCA(t *testing.T) {
 	// Write invalid CA cert to temp file
 	invalidCert := []byte("invalid certificate data")
 	caCertFile := writeTempFile(t, invalidCert, ".crt")
-	defer os.Remove(caCertFile)
+	defer func() { _ = os.Remove(caCertFile) }()
 
 	conf := map[string]string{
 		"address":     "127.0.0.1:8501",
@@ -377,9 +378,9 @@ func TestConsulBackend_TLS_TLSWithClientCert(t *testing.T) {
 	clientCertFile := writeTempFile(t, clientCertPEM, ".crt")
 	clientKeyFile := writeTempFile(t, clientKeyPEM, ".key")
 	defer func() {
-		os.Remove(caCertFile)
-		os.Remove(clientCertFile)
-		os.Remove(clientKeyFile)
+		_ = os.Remove(caCertFile)
+		_ = os.Remove(clientCertFile)
+		_ = os.Remove(clientKeyFile)
 	}()
 
 	conf := map[string]string{
@@ -411,8 +412,8 @@ func TestConsulBackend_TLS_TLSWithClientCertMissingKey(t *testing.T) {
 	caCertFile := writeTempFile(t, caCertPEM, ".crt")
 	clientCertFile := writeTempFile(t, clientCertPEM, ".crt")
 	defer func() {
-		os.Remove(caCertFile)
-		os.Remove(clientCertFile)
+		_ = os.Remove(caCertFile)
+		_ = os.Remove(clientCertFile)
 	}()
 
 	conf := map[string]string{
@@ -444,9 +445,9 @@ func TestConsulBackend_TLS_TLSWithInvalidClientCert(t *testing.T) {
 	clientCertFile := writeTempFile(t, invalidCert, ".crt")
 	clientKeyFile := writeTempFile(t, invalidKey, ".key")
 	defer func() {
-		os.Remove(caCertFile)
-		os.Remove(clientCertFile)
-		os.Remove(clientKeyFile)
+		_ = os.Remove(caCertFile)
+		_ = os.Remove(clientCertFile)
+		_ = os.Remove(clientKeyFile)
 	}()
 
 	conf := map[string]string{
@@ -471,7 +472,7 @@ func TestConsulBackend_TLS_TLSWithServerName(t *testing.T) {
 	_, _, caCertPEM := createTestCA(t)
 
 	caCertFile := writeTempFile(t, caCertPEM, ".crt")
-	defer os.Remove(caCertFile)
+	defer func() { _ = os.Remove(caCertFile) }()
 
 	conf := map[string]string{
 		"address":         "consul.example.com:8501",
@@ -546,7 +547,7 @@ func TestConsulBackend_TLS_TLSSkipVerifyDirect(t *testing.T) {
 			// Create a test CA to avoid other certificate issues
 			_, _, caCertPEM := createTestCA(t)
 			caCertFile := writeTempFile(t, caCertPEM, ".crt")
-			defer os.Remove(caCertFile)
+			defer func() { _ = os.Remove(caCertFile) }()
 
 			conf := map[string]string{
 				"address":         "127.0.0.1:9999", // Non-existent port to avoid actual connection
@@ -569,9 +570,7 @@ func TestConsulBackend_TLS_TLSSkipVerifyDirect(t *testing.T) {
 			// Alternative approach: Test the configuration parsing in isolation
 			// by temporarily modifying the test to not fail on connection
 			confForConfigTest := make(map[string]string)
-			for k, v := range conf {
-				confForConfigTest[k] = v
-			}
+			maps.Copy(confForConfigTest, conf)
 
 			// We'll test the config parsing by examining what would be set
 			// This is a bit of a workaround since the backend creation fails
@@ -635,11 +634,11 @@ func TestConsulBackend_TLS_TLSConfigIntegration(t *testing.T) {
 	serverKeyFile := writeTempFile(t, serverKeyPEM, ".key")
 
 	defer func() {
-		os.Remove(caCertFile)
-		os.Remove(clientCertFile)
-		os.Remove(clientKeyFile)
-		os.Remove(serverCertFile)
-		os.Remove(serverKeyFile)
+		_ = os.Remove(caCertFile)
+		_ = os.Remove(clientCertFile)
+		_ = os.Remove(clientKeyFile)
+		_ = os.Remove(serverCertFile)
+		_ = os.Remove(serverKeyFile)
 	}()
 
 	conf := map[string]string{
@@ -667,7 +666,7 @@ func writeTempFileForBenchmark(b *testing.B, content []byte, suffix string) stri
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer tmpFile.Close()
+	defer func() { _ = tmpFile.Close() }()
 
 	_, err = tmpFile.Write(content)
 	if err != nil {
@@ -785,9 +784,9 @@ func BenchmarkConsulBackend_TLSConfig(b *testing.B) {
 	clientKeyFile := writeTempFileForBenchmark(b, clientKeyPEM, ".key")
 
 	defer func() {
-		os.Remove(caCertFile)
-		os.Remove(clientCertFile)
-		os.Remove(clientKeyFile)
+		_ = os.Remove(caCertFile)
+		_ = os.Remove(clientCertFile)
+		_ = os.Remove(clientKeyFile)
 	}()
 
 	conf := map[string]string{
@@ -803,7 +802,7 @@ func BenchmarkConsulBackend_TLSConfig(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// We expect this to fail connection, but we're benchmarking TLS config parsing
-		NewConsulBackend(conf, logger)
+		_, _ = NewConsulBackend(conf, logger)
 	}
 }
 
@@ -813,7 +812,7 @@ func createTempCertDir(t *testing.T) (string, func()) {
 	require.NoError(t, err)
 
 	cleanup := func() {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	return tmpDir, cleanup
@@ -904,5 +903,5 @@ func TestConsulBackend_TLS_TLSConnection(t *testing.T) {
 	}
 
 	// Cleanup
-	backend.Delete(ctx, "tls-test/key1")
+	_ = backend.Delete(ctx, "tls-test/key1")
 }

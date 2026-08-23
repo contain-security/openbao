@@ -8,9 +8,8 @@
 # main by linting only the packages this fork owns, with the same golangci-lint
 # version and repository config upstream uses — deterministic on any PR size.
 #
-# --tests=false: the fork-owned test files still carry upstream's inherited
-# lint debt (errcheck/modernize); the cleanup rides with the in-flight consul
-# test work. Drop the flag once those land lint-clean.
+# Test files are linted too: the fork-owned consul tests were cleaned of the
+# inherited errcheck/modernize debt, so the gate no longer needs --tests=false.
 #
 # FORK_PACKAGES must be kept in sync with the fork's Go surface (the packages
 # that differ from upstream/main). Same maintenance pattern as the consul test
@@ -56,4 +55,4 @@ jobs:
       - name: Lint fork-owned packages
         run: |
           set -euo pipefail
-          "./golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint" run --tests=false ${FORK_PACKAGES}
+          "./golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint" run ${FORK_PACKAGES}
