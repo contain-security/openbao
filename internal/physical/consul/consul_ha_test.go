@@ -916,3 +916,64 @@ func TestConsulBackend_HA_LegacyLockKeyReclaim(t *testing.T) {
 		}
 	})
 }
+
+// TestConsulBackend_HA_LockDelayCoversMonitorTolerance pins the safety margin
+// that makes the lock delay default load-bearing.
+//
+// The lock monitor tolerates lockMonitorRetries transient Consul errors,
+// lockMonitorRetryTime apart, before it declares leadership lost. A former
+// leader can therefore still believe it is active for that long after its
+// session died. Consul's lock delay is what stops a successor from acquiring
+// and writing inside that window, and it is the only thing that does: unlike
+// upstream Vault's Consul backend, this one does not implement
+// physical.FencingHABackend, so its writes carry no session check.
+//
+// Shortening the delay below the monitor's tolerance would let two nodes write
+// to the same barrier concurrently after an unclean leader loss. Needs no
+// Consul: it is a relationship between constants, which is exactly why it is
+// worth pinning.
+func TestConsulBackend_HA_LockDelayCoversMonitorTolerance(t *testing.T) {
+	tolerance := time.Duration(lockMonitorRetries) * lockMonitorRetryTime
+	if defaultLockDelay < tolerance {
+		t.Fatalf("default lock delay %s is shorter than the %s the lock monitor spends retrying before it reports leadership lost; a demoted leader could still be writing when a successor takes over",
+			defaultLockDelay, tolerance)
+	}
+
+	// Zero is rejected rather than silently becoming Consul's own default, so
+	// whatever the default is must stay expressible.
+	if defaultLockDelay <= 0 {
+		t.Fatalf("default lock delay %s is not expressible: Consul reads an absent delay as its own default", defaultLockDelay)
+	}
+
+	// Consul refuses a lock delay above 60s.
+	if defaultLockDelay > 60*time.Second {
+		t.Fatalf("default lock delay %s exceeds the 60s Consul accepts", defaultLockDelay)
+	}
+}
+
+// TestConsulBackend_HA_LockDelayConfigurable checks an explicitly configured
+// delay reaches the backend, so a deployment can trade the margin above for
+// faster failover if it accepts the risk.
+func TestConsulBackend_HA_LockDelayConfigurable(t *testing.T) {
+	requireConsulReachable(t)
+
+	cfg := requireConsul(t, "test/openbao/ha-lockdelay/")
+	cfg["ha_enabled"] = "true"
+
+	b, err := NewConsulBackend(cfg, hclog.NewNullLogger())
+	if err != nil {
+		failOrSkip(t, "Consul not available: %v", err)
+	}
+	if got := b.(*ConsulBackend).lockDelay; got != defaultLockDelay {
+		t.Errorf("expected the default lock delay %s, got %s", defaultLockDelay, got)
+	}
+
+	cfg["lock_delay"] = "5s"
+	b2, err := NewConsulBackend(cfg, hclog.NewNullLogger())
+	if err != nil {
+		t.Fatalf("failed to build backend with an explicit lock_delay: %v", err)
+	}
+	if got := b2.(*ConsulBackend).lockDelay; got != 5*time.Second {
+		t.Errorf("expected the configured lock delay 5s, got %s", got)
+	}
+}

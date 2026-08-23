@@ -76,13 +76,29 @@ type ConsulLock struct {
 // the range Consul accepts.
 //
 // lock_delay is the window Consul refuses to re-grant a key after the holder's
-// session was invalidated uncleanly, which guards against a partitioned former
-// leader still believing it is active. It applies only to unclean loss: a
-// graceful step-down releases the key explicitly and pays no delay at all, so
-// the cost falls solely on crash and partition failover. That makes it the
-// safety-versus-failover-speed knob, and it is deliberately left at Consul's
-// own default rather than tuned here. Consul caps it at 60s and enforces that
-// itself when the session is created.
+// session was invalidated uncleanly. It guards against a former leader that
+// has not yet noticed it lost the lock -- paused, partitioned, or simply slow
+// to react -- still writing while a successor takes over. It applies only to
+// unclean loss: a graceful step-down releases the key explicitly and pays
+// nothing.
+//
+// It stays at Consul's 15s default, which is also what upstream Vault's Consul
+// backend uses (it says so where it builds the session: "We use Consul's
+// default LockDelay of 15s by not specifying it"). Lowering it would speed up
+// unplanned failover, but this backend has nothing else standing between a
+// demoted leader and the barrier: upstream pairs that same 15s with write
+// fencing -- it implements physical.FencingHABackend and prepends a
+// KVCheckSession verb to every write transaction -- and this backend does
+// neither, so its writes are unfenced.
+//
+// The margin is load-bearing rather than nominal. lockMonitorRetries and
+// lockMonitorRetryTime below deliberately tolerate transient Consul errors
+// before declaring leadership lost, so a former leader can keep believing it
+// is active for that long after its session died. The delay has to cover that
+// window. Shortening it is safe only once writes are fenced.
+//
+// Consul caps lock_delay at 60s and enforces that itself when the session is
+// created.
 const (
 	defaultSessionTTL = 15 * time.Second
 	defaultLockDelay  = 15 * time.Second
@@ -440,7 +456,7 @@ func NewConsulBackend(conf map[string]string, logger hclog.Logger) (physical.Bac
 		// accepting 0 would hand back the opposite of what was asked for.
 		// 1ms is the smallest value that survives the millisecond conversion.
 		if parsed == 0 {
-			return nil, fmt.Errorf("lock_delay of 0 is not supported because Consul reads an absent delay as its 15s default; use 1ms for the shortest delay, or omit lock_delay")
+			return nil, fmt.Errorf("lock_delay of 0 is not supported because Consul reads an absent delay as its own default; use 1ms for the shortest delay, or omit lock_delay for the default %s", defaultLockDelay)
 		}
 		lockDelay = parsed
 	}
