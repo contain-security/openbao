@@ -49,8 +49,7 @@ type ConsulBackend struct {
 	token      string
 
 	// HA-specific fields
-	haEnabled bool
-	// advertiseAddr string
+	haEnabled  bool
 	sessionTTL time.Duration
 	lockDelay  time.Duration
 }
@@ -71,6 +70,23 @@ type ConsulLock struct {
 	lock     *api.Lock  // Built on first Lock(), reused after that
 	unlocked bool       // Track if we've been unlocked
 }
+
+// Defaults for the HA session. defaultSessionTTL is the lifetime of the
+// session holding the lock; validateSessionTTL clamps a configured value to
+// the range Consul accepts.
+//
+// lock_delay is the window Consul refuses to re-grant a key after the holder's
+// session was invalidated uncleanly, which guards against a partitioned former
+// leader still believing it is active. It applies only to unclean loss: a
+// graceful step-down releases the key explicitly and pays no delay at all, so
+// the cost falls solely on crash and partition failover. That makes it the
+// safety-versus-failover-speed knob, and it is deliberately left at Consul's
+// own default rather than tuned here. Consul caps it at 60s and enforces that
+// itself when the session is created.
+const (
+	defaultSessionTTL = 15 * time.Second
+	defaultLockDelay  = 15 * time.Second
+)
 
 // Tuning for the Consul lock helper's leadership monitor. The monitor watches
 // the lock key with a blocking query; the helper defaults to zero retries, so
@@ -366,37 +382,67 @@ func NewConsulBackend(conf map[string]string, logger hclog.Logger) (physical.Bac
 		return nil, fmt.Errorf("failed to create Consul client: %w", err)
 	}
 
-	// Configure HA
-	haEnabled := false
-	if haStr := conf["ha_enabled"]; haStr == "true" || haStr == "1" {
-		haEnabled = true
+	// Configure HA. This defaults to on, matching Vault's Consul backend: an
+	// operator moving a working storage stanza across would otherwise get a
+	// node that never contends for the lock and comes up active and
+	// standalone against storage another node is already serving, with
+	// nothing in the logs to say so.
+	//
+	// ParseBool takes strconv's set -- 1/t/T/TRUE/true/True and the false
+	// equivalents -- so "yes"/"on"/"no"/"off" are rejected rather than
+	// guessed at. That is deliberate: "ha_enabled = no" previously read as
+	// false by falling through the old string compare, and silently getting
+	// the opposite of a plausible-looking value is the failure this is meant
+	// to remove.
+	haEnabled := true
+	if haStr := conf["ha_enabled"]; haStr != "" {
+		parsed, err := parseutil.ParseBool(haStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ha_enabled value %q: %w", haStr, err)
+		}
+		haEnabled = parsed
 	}
-	//advertiseAddr := conf["advertise_addr"]
-	//if haEnabled && advertiseAddr == "" {
-	//	fmt.Printf("DEBUG: HA enabled but advertise_addr not provided. conf=%v\n", conf)
-	//	//logger.Debug("HA enabled but advertise_addr not provided", "conf", conf)
-	//	return nil, fmt.Errorf("advertise_addr is required when HA is enabled")
-	//}
+	if !haEnabled {
+		logger.Warn("HA disabled: node will not contend for leadership and may run active against shared storage",
+			"ha_enabled", conf["ha_enabled"])
+	}
 
-	// Parse HA timing configuration with validation
-	sessionTTL := 15 * time.Second
+	// Timing configuration. A value that does not parse is a startup error
+	// rather than a silent fallback to the default: a typo in session_ttl or
+	// lock_delay changes failover behaviour, and quietly ignoring it hides
+	// that until the cluster actually needs to fail over.
+	sessionTTL := defaultSessionTTL
 	if ttlStr := conf["session_ttl"]; ttlStr != "" {
-		if parsed, err := parseutil.ParseDurationSecond(ttlStr); err == nil {
-			sessionTTL = validateSessionTTL(parsed)
-			if sessionTTL != parsed {
-				logger.Warn("adjusted session_ttl to meet Consul requirements",
-					"requested", parsed, "adjusted", sessionTTL)
-			}
+		parsed, err := parseutil.ParseDurationSecond(ttlStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid session_ttl value %q: %w", ttlStr, err)
+		}
+		sessionTTL = validateSessionTTL(parsed)
+		if sessionTTL != parsed {
+			logger.Warn("adjusted session_ttl to meet Consul requirements",
+				"requested", parsed, "adjusted", sessionTTL)
 		}
 	} else {
 		sessionTTL = validateSessionTTL(sessionTTL)
 	}
 
-	lockDelay := 15 * time.Second
+	lockDelay := defaultLockDelay
 	if delayStr := conf["lock_delay"]; delayStr != "" {
-		if parsed, err := parseutil.ParseDurationSecond(delayStr); err == nil {
-			lockDelay = parsed
+		parsed, err := parseutil.ParseDurationSecond(delayStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid lock_delay value %q: %w", delayStr, err)
 		}
+		if parsed < 0 {
+			return nil, fmt.Errorf("lock_delay cannot be negative, got %s", parsed)
+		}
+		// A zero delay cannot be expressed: the session API omits the field
+		// when it is zero and Consul then applies its own 15s default, so
+		// accepting 0 would hand back the opposite of what was asked for.
+		// 1ms is the smallest value that survives the millisecond conversion.
+		if parsed == 0 {
+			return nil, fmt.Errorf("lock_delay of 0 is not supported because Consul reads an absent delay as its 15s default; use 1ms for the shortest delay, or omit lock_delay")
+		}
+		lockDelay = parsed
 	}
 
 	// Create backend instance
@@ -411,9 +457,8 @@ func NewConsulBackend(conf map[string]string, logger hclog.Logger) (physical.Bac
 		aclEnabled:  aclEnabled,
 		token:       token,
 		haEnabled:   haEnabled,
-		// advertiseAddr: advertiseAddr,
-		sessionTTL: sessionTTL,
-		lockDelay:  lockDelay,
+		sessionTTL:  sessionTTL,
+		lockDelay:   lockDelay,
 	}
 
 	// Test basic connection first
@@ -1018,9 +1063,8 @@ func (c *ConsulBackend) HAEnabled() bool {
 // Add TTL validation to NewConsulBackend function
 func validateSessionTTL(ttl time.Duration) time.Duration {
 	const (
-		minTTL     = 10 * time.Second // Consul minimum
-		maxTTL     = 24 * time.Hour   // Consul maximum
-		defaultTTL = 15 * time.Second
+		minTTL = 10 * time.Second // Consul minimum
+		maxTTL = 24 * time.Hour   // Consul maximum
 	)
 
 	if ttl < minTTL {
@@ -1193,10 +1237,11 @@ func (l *ConsulLock) Value() (bool, string, error) {
 // it, because a released session leaves the key in place.
 //
 // A key qualifies as reclaimable only when nothing holds it and it carries no
-// flags at all, which is the exact signature the old writer left. Such a key carries no meaning: it is leftover state, not
-// a live lock. The delete is a compare-and-swap on the observed ModifyIndex,
-// so if any node acquires the key in the meantime the delete fails rather than
-// destroying a real lock. Returns true when the caller should retry.
+// flags at all, which is the exact signature the old writer left: leftover
+// state, not a live lock. The delete is a compare-and-swap on the observed
+// ModifyIndex, so if any node acquires the key in the meantime the delete
+// fails rather than destroying a real lock. Returns true when the caller
+// should retry.
 func (l *ConsulLock) reclaimLegacyLockKey() (bool, error) {
 	lockKey := l.backend.consulKey(l.key)
 
@@ -1232,7 +1277,7 @@ func (l *ConsulLock) reclaimLegacyLockKey() (bool, error) {
 		return true, nil
 	}
 
-	l.logger.Warn("cleared an unheld lock key written by an earlier OpenBao version so it can be used as a consul lock",
+	l.logger.Warn("cleared an unheld lock key left by an earlier version so it can be used as a consul lock",
 		"key", lockKey, "modify_index", pair.ModifyIndex)
 	return true, nil
 }

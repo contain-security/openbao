@@ -558,6 +558,10 @@ func TestConsulBackend_HA_Configuration(t *testing.T) {
 		config    map[string]string
 		shouldErr bool
 		errMsg    string
+		// expectHA states the expected HAEnabled() rather than deriving it
+		// from the config string, so a case using a non-canonical spelling
+		// cannot silently assert the opposite of the contract.
+		expectHA bool
 	}{
 		{
 			name: "valid HA config",
@@ -568,14 +572,102 @@ func TestConsulBackend_HA_Configuration(t *testing.T) {
 				"advertise_addr": "http://127.0.0.1:8200",
 			},
 			shouldErr: false,
+			expectHA:  true,
 		},
 		{
+			// HA now defaults to on, matching Vault, so disabling it takes an
+			// explicit value.
 			name: "HA disabled",
+			config: map[string]string{
+				"address":    consulHTTPAddr(),
+				"path":       "test/",
+				"ha_enabled": "false",
+			},
+			shouldErr: false,
+			expectHA:  false,
+		},
+		{
+			name: "HA defaults to enabled when unset",
 			config: map[string]string{
 				"address": consulHTTPAddr(),
 				"path":    "test/",
 			},
 			shouldErr: false,
+			expectHA:  true,
+		},
+		{
+			name: "unparseable ha_enabled is rejected",
+			config: map[string]string{
+				"address":    consulHTTPAddr(),
+				"path":       "test/",
+				"ha_enabled": "yes-please",
+			},
+			shouldErr: true,
+			errMsg:    "invalid ha_enabled",
+		},
+		{
+			name: "unparseable session_ttl is rejected",
+			config: map[string]string{
+				"address":     consulHTTPAddr(),
+				"path":        "test/",
+				"session_ttl": "30 fortnights",
+			},
+			shouldErr: true,
+			errMsg:    "invalid session_ttl",
+		},
+		{
+			name: "unparseable lock_delay is rejected",
+			config: map[string]string{
+				"address":    consulHTTPAddr(),
+				"path":       "test/",
+				"lock_delay": "soon",
+			},
+			shouldErr: true,
+			errMsg:    "invalid lock_delay",
+		},
+		{
+			name: "negative lock_delay is rejected",
+			config: map[string]string{
+				"address":    consulHTTPAddr(),
+				"path":       "test/",
+				"lock_delay": "-5s",
+			},
+			shouldErr: true,
+			errMsg:    "cannot be negative",
+		},
+		{
+			// Consul reads an absent delay as its own default, so 0 would
+			// quietly mean 15s rather than "no delay".
+			name: "zero lock_delay is rejected",
+			config: map[string]string{
+				"address":    consulHTTPAddr(),
+				"path":       "test/",
+				"lock_delay": "0s",
+			},
+			shouldErr: true,
+			errMsg:    "not supported",
+		},
+		{
+			// ParseBool takes strconv's set, which the old string compare
+			// did not: "1" worked but "True" and "t" did not.
+			name: "non-canonical true spelling enables HA",
+			config: map[string]string{
+				"address":    consulHTTPAddr(),
+				"path":       "test/",
+				"ha_enabled": "True",
+			},
+			shouldErr: false,
+			expectHA:  true,
+		},
+		{
+			name: "non-canonical false spelling disables HA",
+			config: map[string]string{
+				"address":    consulHTTPAddr(),
+				"path":       "test/",
+				"ha_enabled": "0",
+			},
+			shouldErr: false,
+			expectHA:  false,
 		},
 		{
 			name: "custom HA timing",
@@ -588,6 +680,7 @@ func TestConsulBackend_HA_Configuration(t *testing.T) {
 				"lock_delay":     "10s",
 			},
 			shouldErr: false,
+			expectHA:  true,
 		},
 	}
 
@@ -610,9 +703,8 @@ func TestConsulBackend_HA_Configuration(t *testing.T) {
 			}
 
 			if haBackend, ok := backend.(physical.HABackend); ok {
-				expectedHA := tc.config["ha_enabled"] == "true"
-				if haBackend.HAEnabled() != expectedHA {
-					t.Fatalf("Expected HA enabled: %v, got: %v", expectedHA, haBackend.HAEnabled())
+				if haBackend.HAEnabled() != tc.expectHA {
+					t.Fatalf("Expected HA enabled: %v, got: %v", tc.expectHA, haBackend.HAEnabled())
 				}
 			}
 		})

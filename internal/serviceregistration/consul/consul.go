@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-hclog"
 	"github.com/openbao/openbao/v2/internal/serviceregistration"
+	"github.com/openbao/openbao/v2/internal/version"
 )
 
 const (
@@ -337,7 +338,7 @@ func (c *consulServiceRegistration) registerService() error {
 		Port:    c.config.ServicePort,
 		Address: c.config.ServiceAddress,
 		Meta: map[string]string{
-			"version": "2.1.0",
+			"version": version.GetVersion().VersionNumber(),
 		},
 	}
 
