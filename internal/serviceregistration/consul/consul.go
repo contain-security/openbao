@@ -440,7 +440,8 @@ func detectLocalAddress() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	// Nothing is ever sent on this probe socket, so Close cannot fail meaningfully.
+	defer func() { _ = conn.Close() }()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }
 
