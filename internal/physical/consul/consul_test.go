@@ -327,41 +327,55 @@ func TestConsulBackend_BASIC_ListPage_Pattern1_SimplePagination(t *testing.T) {
 		}
 	})
 
-	t.Run("zero limit", func(t *testing.T) {
+	// physical.Backend documents the limit as "at most limit entries (negative
+	// for unlimited)". inmem treats zero the same way, so both return the lot.
+	t.Run("zero limit means unlimited", func(t *testing.T) {
 		keys, err := backend.ListPage(ctx, testPrefix, "", 0)
 		if err != nil {
 			t.Fatalf("ListPage with zero limit failed: %v", err)
 		}
-		if len(keys) != 0 {
-			t.Fatalf("Expected 0 keys for zero limit, got %d", len(keys))
+		if len(keys) != numEntries {
+			t.Fatalf("Expected all %d keys for zero limit, got %d: %v", numEntries, len(keys), keys)
 		}
 	})
 
-	t.Run("negative limit (should return 0)", func(t *testing.T) {
+	t.Run("negative limit means unlimited", func(t *testing.T) {
 		keys, err := backend.ListPage(ctx, testPrefix, "", -5)
 		if err != nil {
 			t.Fatalf("ListPage with negative limit failed: %v", err)
 		}
-		if len(keys) != 0 {
-			t.Fatalf("Expected 0 keys for negative limit, got %d", len(keys))
+		if len(keys) != numEntries {
+			t.Fatalf("Expected all %d keys for negative limit, got %d: %v", numEntries, len(keys), keys)
 		}
 	})
 
-	t.Run("after key not found in list, starts from beginning", func(t *testing.T) {
-		keys, err := backend.ListPage(ctx, testPrefix, "non-existent-after-key", 3)
+	// The cursor need not still exist: it may have been deleted between pages.
+	// The contract asks for the keys that sort after it, so pagination has to
+	// resume by comparison rather than restart from the beginning -- a restart
+	// makes a paginating caller re-read page one forever.
+	t.Run("absent after key resumes by sort order", func(t *testing.T) {
+		// Sorts between key06 and key07, and is not itself a key.
+		keys, err := backend.ListPage(ctx, testPrefix, "key06x", 3)
 		if err != nil {
-			t.Fatalf("ListPage with non-existent after key failed: %v", err)
+			t.Fatalf("ListPage with absent after key failed: %v", err)
 		}
-		// The current simple pagination logic will start from the beginning if "after" key is not found.
-		// Adjust this expectation if the ListPage implementation changes to return an error or empty list.
-		if len(keys) != 3 {
-			t.Fatalf("Expected 3 keys when after key not found, got %d: %v", len(keys), keys)
+		expected := expectedRelativeKeys[7:10]
+		if len(keys) != len(expected) {
+			t.Fatalf("Expected %d keys after an absent cursor, got %d: %v", len(expected), len(keys), keys)
 		}
-		expected := expectedRelativeKeys[0:3]
 		for i, key := range keys {
 			if key != expected[i] {
 				t.Errorf("Mismatch at index %d: expected %s, got %s", i, expected[i], key)
 			}
+		}
+
+		// A cursor sorting beyond every key yields nothing at all.
+		keys, err = backend.ListPage(ctx, testPrefix, "non-existent-after-key", 3)
+		if err != nil {
+			t.Fatalf("ListPage with out-of-range after key failed: %v", err)
+		}
+		if len(keys) != 0 {
+			t.Fatalf("Expected 0 keys past the end of the range, got %d: %v", len(keys), keys)
 		}
 	})
 
@@ -424,5 +438,39 @@ func TestConsulBackend_BASIC_ConfigValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error for valid minimal config: %v", err)
 		}
+	})
+}
+
+// TestConsulBackend_SDKConformance runs the SDK's backend contract suites, the
+// same ones raft and postgresql run and consul did not.
+//
+// ExerciseBackend covers ListPage directly, including the documented
+// "negative for unlimited" sentinel and the behaviour when the after cursor is
+// not present among the keys.
+func TestConsulBackend_SDKConformance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping SDK conformance test in short mode")
+	}
+
+	logger := hclog.NewNullLogger()
+
+	newBackend := func(t *testing.T, suite string) physical.Backend {
+		t.Helper()
+		// A prefix per suite and per run keeps the suites, which each assume
+		// they start against an empty backend, from seeing each other's keys.
+		path := fmt.Sprintf("test/openbao/conformance-%s-%d/", suite, time.Now().UnixNano())
+		b, err := NewConsulBackend(requireConsul(t, path), logger)
+		if err != nil {
+			failOrSkip(t, "Consul not available: %v", err)
+		}
+		return b
+	}
+
+	t.Run("ExerciseBackend", func(t *testing.T) {
+		physical.ExerciseBackend(t, newBackend(t, "backend"))
+	})
+
+	t.Run("ExerciseBackend_ListPrefix", func(t *testing.T) {
+		physical.ExerciseBackend_ListPrefix(t, newBackend(t, "listprefix"))
 	})
 }

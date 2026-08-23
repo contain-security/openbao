@@ -713,9 +713,14 @@ func TestConsulBackend_HA_LegacyLockKeyReclaim(t *testing.T) {
 		var sessionID string
 		if withSession {
 			var err error
+			// Nothing renews this session, so it must outlive the subtest:
+			// were it to lapse mid-test the key would silently become the
+			// unheld case and the assertions below would prove nothing. The
+			// assertions run in well under a second; the TTL is generous only
+			// to keep that true if the subtest ever grows.
 			sessionID, _, err = backend.client.Session().Create(&api.SessionEntry{
 				Name:     "openbao-legacy-test",
-				TTL:      "10s",
+				TTL:      "120s",
 				Behavior: api.SessionBehaviorRelease,
 			}, nil)
 			if err != nil {

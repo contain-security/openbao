@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -857,11 +858,14 @@ func (c *ConsulBackend) List(ctx context.Context, prefix string) ([]string, erro
 	var result []string
 
 	err := c.withRetry(ctx, "list", func() error {
-		// Use "/" as separator to get hierarchical listing
+		// physical.Backend.List lists a prefix "up to the next prefix": one
+		// level, with anything deeper collapsed to a "subdir/" entry. That is
+		// exactly what Consul returns when given "/" as the separator; passing
+		// no separator returns the whole key space below the prefix instead.
 		queryOpts := &api.QueryOptions{}
 		queryOpts = queryOpts.WithContext(ctx)
 
-		keys, _, err := c.kv.Keys(consulPrefix, "", queryOpts)
+		keys, _, err := c.kv.Keys(consulPrefix, "/", queryOpts)
 		if err != nil {
 			// Check if the error is due to context cancellation
 			if ctx.Err() != nil {
@@ -940,10 +944,12 @@ func (c *ConsulBackend) ListPage(ctx context.Context, prefix string, after strin
 		return nil, err
 	}
 
-	// Apply pagination
-	var result []string
-	found := after == "" // If no after key, start from beginning
+	// The cursor is applied by comparison, so the keys have to be ordered.
+	// Consul returns them sorted and the prefix strip preserves that, but
+	// sorting here keeps the pagination correct regardless.
+	sort.Strings(allKeys)
 
+	var result []string
 	for i, key := range allKeys {
 		// Check for context cancellation during pagination processing
 		if i%50 == 0 { // Check every 50 iterations
@@ -960,42 +966,21 @@ func (c *ConsulBackend) ListPage(ctx context.Context, prefix string, after strin
 			}
 		}
 
-		if !found {
-			if key == after {
-				found = true
-			}
+		// Skip everything up to and including the cursor. Comparing rather
+		// than searching for an exact match matters: the cursor key may have
+		// been deleted between pages, and the contract still asks for the keys
+		// that sort after it.
+		if after != "" && key <= after {
 			continue
 		}
 
-		if len(result) >= limit {
+		// A negative limit means unlimited, per the physical.Backend contract;
+		// zero is treated the same way, matching inmem.
+		if limit > 0 && len(result) >= limit {
 			break
 		}
 
 		result = append(result, key)
-	}
-	if !found {
-		// handle case of after - not in keys
-		for i, key := range allKeys {
-			// Check for context cancellation during fallback processing
-			if i%50 == 0 { // Check every 50 iterations
-				select {
-				case <-ctx.Done():
-					c.logger.Debug("consul listpage operation cancelled during fallback processing",
-						"prefix", prefix,
-						"after", after,
-						"limit", limit,
-						"processed", i,
-						"error", ctx.Err())
-					return nil, ctx.Err()
-				default:
-				}
-			}
-
-			if len(result) >= limit {
-				break
-			}
-			result = append(result, key)
-		}
 	}
 
 	c.logger.Trace("paginated key list from consul",
@@ -1207,8 +1192,8 @@ func (l *ConsulLock) Value() (bool, string, error) {
 // never be able to take leadership -- the key outlives the session that made
 // it, because a released session leaves the key in place.
 //
-// A key qualifies as reclaimable only when nothing holds it and it is not
-// already a lock key. Such a key carries no meaning: it is leftover state, not
+// A key qualifies as reclaimable only when nothing holds it and it carries no
+// flags at all, which is the exact signature the old writer left. Such a key carries no meaning: it is leftover state, not
 // a live lock. The delete is a compare-and-swap on the observed ModifyIndex,
 // so if any node acquires the key in the meantime the delete fails rather than
 // destroying a real lock. Returns true when the caller should retry.
