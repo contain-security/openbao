@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -62,13 +63,22 @@ type ConsulLock struct {
 	sessionTTL time.Duration
 	lockDelay  time.Duration
 
-	// Internal state
-	session  string
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	mu       sync.Mutex // Protect internal state
+	// Internal state. The Consul API lock helper owns the session, its
+	// periodic renewal and the leadership monitor, so none of that is
+	// tracked here.
+	mu       sync.Mutex // Protects the fields below
+	lock     *api.Lock  // Built on first Lock(), reused after that
 	unlocked bool       // Track if we've been unlocked
 }
+
+// Tuning for the Consul lock helper's leadership monitor. The monitor watches
+// the lock key with a blocking query; the helper defaults to zero retries, so
+// without these a single transient Consul error would be reported as lost
+// leadership and trigger an unnecessary failover.
+const (
+	lockMonitorRetries   = 5
+	lockMonitorRetryTime = 2 * time.Second
+)
 
 // RetryConfig holds retry configuration parameters
 type RetryConfig struct {
@@ -1037,238 +1047,209 @@ func validateSessionTTL(ttl time.Duration) time.Duration {
 	return ttl
 }
 
-// updated with session creation in Lock method
+// Lock acquires the lock, blocking until it is held or stopCh is closed.
+//
+// physical.Lock requires Lock to block: core calls it in a retry loop and logs
+// every returned error at ERROR, so a non-blocking implementation makes a
+// healthy standby emit a continuous stream of "failed to acquire lock: already
+// held". Blocking also removes the poll interval from failover, since Consul
+// grants a waiting acquire the moment the previous holder's session is released.
+//
+// A nil channel with a nil error means stopCh fired before the lock was
+// acquired; core treats that as "shutting down", matching inmem and raft.
+//
+// stopCh is only evaluated between blocking queries, so a close can take up to
+// the helper's lock wait time (15s by default) to take effect. That bounds how
+// long a standby's shutdown can stall waiting for this to return.
 func (l *ConsulLock) Lock(stopCh <-chan struct{}) (<-chan struct{}, error) {
+	lock, err := l.apiLock()
+	if err != nil {
+		return nil, err
+	}
+
+	l.logger.Debug("attempting to acquire consul lock", "key", l.key)
+
+	// l.mu must NOT be held here: the acquire below blocks for as long as
+	// another node holds the lock, and Value() has to stay callable
+	// throughout. Unlock() serialises behind a pending acquire because the
+	// helper guards both with its own mutex, so an in-flight acquire is
+	// aborted with stopCh, not by unlocking.
+	leaderCh, err := lock.Lock(stopCh)
+	if errors.Is(err, api.ErrLockConflict) {
+		// The key exists but is not marked as a Consul lock: almost certainly
+		// written by the pre-api.Lock implementation. Clear it if it is unheld
+		// and retry once.
+		retry, reclaimErr := l.reclaimLegacyLockKey()
+		if reclaimErr != nil {
+			return nil, fmt.Errorf("%w (while handling %w)", reclaimErr, err)
+		}
+		if retry {
+			leaderCh, err = lock.Lock(stopCh)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire consul lock: %w", err)
+	}
+	if leaderCh == nil {
+		l.logger.Debug("consul lock acquisition interrupted before acquiring", "key", l.key)
+		return nil, nil
+	}
+
+	l.logger.Info("successfully acquired consul lock", "key", l.key, "ttl", l.sessionTTL)
+	return leaderCh, nil
+}
+
+// apiLock returns the underlying Consul lock helper, building it on first use.
+func (l *ConsulLock) apiLock() (*api.Lock, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if l.unlocked {
 		return nil, fmt.Errorf("lock has been unlocked and cannot be reused")
 	}
+	if l.lock != nil {
+		return l.lock, nil
+	}
 
-	l.logger.Debug("attempting to acquire consul lock", "key", l.key)
-
-	// Validate and adjust session TTL
+	// Validate here rather than at config time so a lock built directly in a
+	// test cannot install a TTL Consul would reject.
 	validTTL := validateSessionTTL(l.sessionTTL)
 	if validTTL != l.sessionTTL {
 		l.logger.Debug("adjusted session TTL to meet Consul requirements",
 			"requested", l.sessionTTL, "adjusted", validTTL)
 		l.sessionTTL = validTTL
 	}
+	ttl := l.sessionTTL.String()
+	sessionName := fmt.Sprintf("openbao-lock-%s", l.key)
 
-	// Create a session for this lock
-	session := &api.SessionEntry{
-		TTL:       l.sessionTTL.String(),
-		LockDelay: l.lockDelay,
-		Behavior:  api.SessionBehaviorRelease,
-		Name:      fmt.Sprintf("openbao-lock-%s", l.key),
-	}
-
-	sessionID, _, err := l.backend.client.Session().Create(session, nil)
+	lock, err := l.backend.client.LockOpts(&api.LockOptions{
+		Key:   l.backend.consulKey(l.key),
+		Value: []byte(l.value),
+		// SessionOpts drives session creation; SessionTTL is set to the same
+		// value because the helper's periodic renewal reads that field rather
+		// than SessionOpts.
+		SessionTTL: ttl,
+		SessionOpts: &api.SessionEntry{
+			Name:      sessionName,
+			TTL:       ttl,
+			LockDelay: l.lockDelay,
+			Behavior:  api.SessionBehaviorRelease,
+		},
+		MonitorRetries:   lockMonitorRetries,
+		MonitorRetryTime: lockMonitorRetryTime,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create consul session: %w", err)
+		return nil, fmt.Errorf("failed to create consul lock: %w", err)
 	}
 
-	l.session = sessionID
-	l.stopCh = make(chan struct{})
-	l.doneCh = make(chan struct{})
-
-	// Attempt to acquire the lock
-	lockKey := l.backend.consulKey(l.key)
-
-	pair := &api.KVPair{
-		Key:     lockKey,
-		Value:   []byte(l.value),
-		Session: sessionID,
-	}
-
-	acquired, _, err := l.backend.kv.Acquire(pair, nil)
-	if err != nil {
-		// Clean up session on failure; the session TTL reaps it if this fails
-		if _, destroyErr := l.backend.client.Session().Destroy(sessionID, nil); destroyErr != nil {
-			l.logger.Warn("failed to destroy consul session after lock acquire error", "session", sessionID, "error", destroyErr)
-		}
-		l.session = ""
-		return nil, fmt.Errorf("failed to acquire consul lock: %w", err)
-	}
-
-	if !acquired {
-		// Clean up session on failure; the session TTL reaps it if this fails
-		if _, destroyErr := l.backend.client.Session().Destroy(sessionID, nil); destroyErr != nil {
-			l.logger.Warn("failed to destroy consul session after failed lock acquire", "session", sessionID, "error", destroyErr)
-		}
-		l.session = ""
-		return nil, fmt.Errorf("failed to acquire lock: already held")
-	}
-
-	l.logger.Info("successfully acquired consul lock", "key", l.key, "session", sessionID, "ttl", l.sessionTTL)
-
-	// Start session renewal goroutine
-	go l.renewSession()
-
-	// Start lock monitoring goroutine
-	go l.monitorLock(stopCh)
-
-	return l.doneCh, nil
+	l.lock = lock
+	return lock, nil
 }
 
-// Unlock releases the lock
+// Unlock releases the lock and tears down its session.
 func (l *ConsulLock) Unlock() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	lock := l.lock
+	if lock == nil || l.unlocked {
+		l.mu.Unlock()
+		return nil // never locked, or already unlocked
+	}
+	l.unlocked = true
+	l.mu.Unlock()
 
 	l.logger.Debug("releasing consul lock", "key", l.key)
 
-	if l.session == "" || l.unlocked {
-		return nil // Already unlocked
-	}
-
-	// Mark as unlocked first
-	l.unlocked = true
-	sessionID := l.session
-	l.session = "" // Clear session ID
-
-	// Signal goroutines to stop
-	if l.stopCh != nil {
-		close(l.stopCh)
-	}
-
-	// Release the lock from Consul
-	lockKey := l.backend.consulKey(l.key)
-	pair := &api.KVPair{
-		Key:     lockKey,
-		Session: sessionID,
-	}
-
-	released, _, err := l.backend.kv.Release(pair, nil)
-	if err != nil {
-		l.logger.Error("failed to release consul lock", "error", err)
-	} else if !released {
-		l.logger.Warn("consul lock was not held when attempting to release", "key", l.key)
-	}
-
-	// Destroy the session
-	_, sessionErr := l.backend.client.Session().Destroy(sessionID, nil)
-	if sessionErr != nil {
-		l.logger.Error("failed to destroy consul session", "error", sessionErr)
-	}
-
-	// Close the done channel to signal lock release
-	if l.doneCh != nil {
-		close(l.doneCh)
+	// Not holding the lock is not an error: the session may already have been
+	// invalidated, which is one of the ways leadership is lost.
+	//
+	// Releasing clears the session from the key and then stops the renewal
+	// goroutine, which destroys the session on its way out; session_ttl is
+	// only the backstop if that destroy fails. The key itself stays in place
+	// with its session cleared, which is the normal Consul lock lifecycle --
+	// Value() reports an unheld key as not held.
+	if err := lock.Unlock(); err != nil && !errors.Is(err, api.ErrLockNotHeld) {
+		return fmt.Errorf("failed to release consul lock: %w", err)
 	}
 
 	l.logger.Info("consul lock released", "key", l.key)
-
-	// Return the more serious error (lock release vs session destroy)
-	if err != nil {
-		return err
-	}
-	return sessionErr
+	return nil
 }
 
-// Value returns the current lock value
+// Value reports whether the lock is held by ANY node, together with the value
+// its holder stored.
+//
+// This is a cluster-wide query, not an ownership check. Core.LeaderLocked
+// builds a fresh lock object -- one that never acquired anything and so has no
+// session of its own -- and calls Value to learn the active node's UUID before
+// reading core/leader/<uuid>. Reporting "held by me" here makes every standby
+// answer "no leader", so it can neither serve nor redirect a request. Consul
+// represents "held" as a session being attached to the key.
+//
+// Deliberately takes no mutex: it reads no mutable state, and Lock() blocks for
+// as long as another node holds the lock.
 func (l *ConsulLock) Value() (bool, string, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	// If we've been unlocked or don't have a session, we don't hold the lock
-	if l.unlocked || l.session == "" {
-		return false, "", nil
-	}
-
-	lockKey := l.backend.consulKey(l.key)
-	pair, _, err := l.backend.kv.Get(lockKey, nil)
+	pair, _, err := l.backend.kv.Get(l.backend.consulKey(l.key), nil)
 	if err != nil {
-		return false, "", err
+		return false, "", fmt.Errorf("failed to read consul lock: %w", err)
 	}
-
-	// No lock exists
 	if pair == nil {
 		return false, "", nil
 	}
-
-	// Check if the lock is held by our session
-	if pair.Session != l.session {
-		// Lock exists but not held by us
-		return false, string(pair.Value), nil
-	}
-
-	// We hold the lock
-	return true, string(pair.Value), nil
+	return pair.Session != "", string(pair.Value), nil
 }
 
-// renewSession periodically renews the Consul session
-func (l *ConsulLock) renewSession() {
-	ticker := time.NewTicker(l.sessionTTL / 3) // Renew at 1/3 of TTL
-	defer ticker.Stop()
+// reclaimLegacyLockKey clears a lock key left behind by the pre-api.Lock
+// implementation so the key can be used as a Consul lock again.
+//
+// The earlier hand-rolled acquire wrote the lock key with no flags. Consul's
+// lock helper marks its keys with LockFlagValue and refuses any key that does
+// not carry it (ErrLockConflict), so after an upgrade the node would otherwise
+// never be able to take leadership -- the key outlives the session that made
+// it, because a released session leaves the key in place.
+//
+// A key qualifies as reclaimable only when nothing holds it and it is not
+// already a lock key. Such a key carries no meaning: it is leftover state, not
+// a live lock. The delete is a compare-and-swap on the observed ModifyIndex,
+// so if any node acquires the key in the meantime the delete fails rather than
+// destroying a real lock. Returns true when the caller should retry.
+func (l *ConsulLock) reclaimLegacyLockKey() (bool, error) {
+	lockKey := l.backend.consulKey(l.key)
 
-	for {
-		select {
-		case <-ticker.C:
-			l.mu.Lock()
-			sessionID := l.session
-			unlocked := l.unlocked
-			l.mu.Unlock()
-
-			if unlocked || sessionID == "" {
-				return
-			}
-
-			entry, _, err := l.backend.client.Session().Renew(sessionID, nil)
-			if err != nil || entry == nil {
-				l.logger.Error("failed to renew consul session", "error", err)
-				l.signalLockLost()
-				return
-			}
-			l.logger.Trace("renewed consul session", "session", sessionID)
-
-		case <-l.stopCh:
-			return
-		}
+	pair, _, err := l.backend.kv.Get(lockKey, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to read consul lock: %w", err)
 	}
-}
-
-// monitorLock monitors the lock and signals if it's lost
-func (l *ConsulLock) monitorLock(stopCh <-chan struct{}) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// Check if we still hold the lock
-			held, _, err := l.Value()
-			if err != nil {
-				l.logger.Error("failed to check lock status", "error", err)
-				l.signalLockLost()
-				return
-			}
-
-			if !held {
-				l.logger.Warn("consul lock lost", "key", l.key)
-				l.signalLockLost()
-				return
-			}
-
-		case <-stopCh:
-			return
-
-		case <-l.stopCh:
-			return
-		}
+	if pair == nil {
+		return true, nil // already gone; retrying is safe
 	}
-}
-
-// signalLockLost safely signals that the lock has been lost
-func (l *ConsulLock) signalLockLost() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.doneCh != nil && !l.unlocked {
-		close(l.doneCh)
-		l.doneCh = nil
+	if pair.Session != "" {
+		// Held by someone. Whatever it is, it is live and must not be touched.
+		return false, nil
 	}
+	if pair.Flags != 0 {
+		// The legacy writer set no flags at all, so anything else -- a lock
+		// key already in the right format, a semaphore, some foreign use of
+		// the same path -- is not ours to remove. Retry only when it is
+		// already a well-formed lock, which means another node converted it
+		// between the helper's read and this one.
+		return pair.Flags == api.LockFlagValue, nil
+	}
+
+	deleted, _, err := l.backend.kv.DeleteCAS(&api.KVPair{
+		Key:         lockKey,
+		ModifyIndex: pair.ModifyIndex,
+	}, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to clear legacy consul lock key: %w", err)
+	}
+	if !deleted {
+		// Someone changed the key first; let the caller retry and re-evaluate.
+		return true, nil
+	}
+
+	l.logger.Warn("cleared an unheld lock key written by an earlier OpenBao version so it can be used as a consul lock",
+		"key", lockKey, "modify_index", pair.ModifyIndex)
+	return true, nil
 }
 
 // LockWith attempts to acquire a lock for HA coordination

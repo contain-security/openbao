@@ -1,6 +1,7 @@
 package consul
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-hclog"
 	"github.com/openbao/openbao/sdk/v2/physical"
 )
@@ -400,6 +402,10 @@ func TestConsulBackend_HA_LockContention(t *testing.T) {
 
 	var successCount int64
 	var errorCount int64
+	// holders counts contenders inside the critical section at any instant;
+	// exclusionViolations records every moment it exceeded one.
+	var holders atomic.Int64
+	var exclusionViolations atomic.Int64
 	var wg sync.WaitGroup
 
 	// Create multiple contenders
@@ -424,19 +430,25 @@ func TestConsulBackend_HA_LockContention(t *testing.T) {
 			stopCh := make(chan struct{})
 			leaderCh, err := lock.Lock(stopCh)
 			if err != nil {
-				// Expected for most contenders
-				t.Logf("Contender %d failed to acquire lock: %v", id, err)
+				// Lock blocks until the lock is free, so every contender is
+				// expected to acquire it in turn; an error is a failure.
+				atomic.AddInt64(&errorCount, 1)
+				t.Errorf("Contender %d failed to acquire lock: %v", id, err)
 				return
 			}
 
 			// We got the lock!
 			atomic.AddInt64(&successCount, 1)
+			if holders.Add(1) > 1 {
+				exclusionViolations.Add(1)
+			}
 			t.Logf("Contender %d acquired the lock", id)
 
 			// Hold it briefly
 			time.Sleep(500 * time.Millisecond)
 
 			// Release it
+			holders.Add(-1)
 			_ = lock.Unlock()
 			close(stopCh)
 			<-leaderCh
@@ -447,9 +459,17 @@ func TestConsulBackend_HA_LockContention(t *testing.T) {
 
 	wg.Wait()
 
-	// Exactly one should have succeeded
-	if successCount != 1 {
-		t.Errorf("Expected exactly 1 successful lock acquisition, got %d", successCount)
+	// The invariant a lock must uphold is mutual exclusion: never two holders
+	// at once. It is NOT "only one contender ever acquires" -- Lock blocks
+	// until the lock is free, so each contender takes it in turn.
+	if v := exclusionViolations.Load(); v != 0 {
+		t.Errorf("Lock granted to more than one contender at a time (%d violations)", v)
+	}
+	if successCount != int64(numContenders) {
+		t.Errorf("Expected all %d contenders to acquire the lock in turn, got %d", numContenders, successCount)
+	}
+	if errorCount != 0 {
+		t.Errorf("Expected no acquisition errors, got %d", errorCount)
 	}
 
 	t.Logf("Lock contention test completed: %d successful, %d errors out of %d contenders",
@@ -614,4 +634,188 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestConsulBackend_HA_SDKConformance runs the SDK's HA contract suite against
+// two independent backends sharing one Consul, the same way raft, postgresql
+// and inmem do.
+//
+// Consul was the only HA backend in the tree not wired into this suite, which
+// is how two physical.Lock contract violations survived: Value() reported "held
+// by me" rather than "held by any node" (leaving Core.LeaderLocked unable to
+// find the active node), and Lock() returned an error instead of blocking when
+// the lock was already held. ExerciseHABackend asserts both directly.
+func TestConsulBackend_HA_SDKConformance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping HA conformance test in short mode")
+	}
+
+	logger := hclog.NewNullLogger()
+
+	// Both backends must share one prefix so they contend for the same key;
+	// the timestamp keeps reruns from inheriting a previous run's state.
+	path := fmt.Sprintf("test/openbao/ha-conformance-%d/", time.Now().UnixNano())
+
+	newBackend := func() physical.HABackend {
+		t.Helper()
+		cfg := requireConsul(t, path)
+		cfg["ha_enabled"] = "true"
+		b, err := NewConsulBackend(cfg, logger)
+		if err != nil {
+			failOrSkip(t, "Consul not available: %v", err)
+		}
+		ha, ok := b.(physical.HABackend)
+		if !ok {
+			t.Fatal("consul backend does not implement physical.HABackend")
+		}
+		return ha
+	}
+
+	physical.ExerciseHABackend(t, newBackend(), newBackend())
+}
+
+// TestConsulBackend_HA_LegacyLockKeyReclaim covers the compatibility path for
+// lock keys written before the backend moved to the Consul lock helper.
+//
+// That earlier implementation acquired the key with no flags. The helper marks
+// its own keys with api.LockFlagValue and rejects any key without it, and a
+// released Consul session leaves the key behind, so an upgraded node would
+// otherwise fail every acquisition with "Existing key does not match lock use"
+// and could never take leadership. Reclaiming is only safe for a key that
+// nothing holds and that is not already a lock, which is what these cases pin
+// down.
+func TestConsulBackend_HA_LegacyLockKeyReclaim(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping HA legacy reclaim test in short mode")
+	}
+
+	logger := hclog.NewNullLogger()
+	path := fmt.Sprintf("test/openbao/ha-legacy-%d/", time.Now().UnixNano())
+
+	newBackend := func() *ConsulBackend {
+		t.Helper()
+		cfg := requireConsul(t, path)
+		cfg["ha_enabled"] = "true"
+		b, err := NewConsulBackend(cfg, logger)
+		if err != nil {
+			failOrSkip(t, "Consul not available: %v", err)
+		}
+		return b.(*ConsulBackend)
+	}
+
+	backend := newBackend()
+
+	// writeLegacyKey reproduces exactly what the old implementation wrote: a
+	// KV entry with no flags, optionally held by a session.
+	writeLegacyKey := func(t *testing.T, key string, withSession bool) string {
+		t.Helper()
+		pair := &api.KVPair{Key: backend.consulKey(key), Value: []byte("legacy-holder")}
+		var sessionID string
+		if withSession {
+			var err error
+			sessionID, _, err = backend.client.Session().Create(&api.SessionEntry{
+				Name:     "openbao-legacy-test",
+				TTL:      "10s",
+				Behavior: api.SessionBehaviorRelease,
+			}, nil)
+			if err != nil {
+				t.Fatalf("failed to create legacy session: %v", err)
+			}
+			t.Cleanup(func() { _, _ = backend.client.Session().Destroy(sessionID, nil) })
+			pair.Session = sessionID
+			acquired, _, err := backend.kv.Acquire(pair, nil)
+			if err != nil || !acquired {
+				t.Fatalf("failed to seed held legacy key: acquired=%v err=%v", acquired, err)
+			}
+		} else if _, err := backend.kv.Put(pair, nil); err != nil {
+			t.Fatalf("failed to seed legacy key: %v", err)
+		}
+
+		seeded, _, err := backend.kv.Get(backend.consulKey(key), nil)
+		if err != nil || seeded == nil {
+			t.Fatalf("legacy key not seeded: %v", err)
+		}
+		if seeded.Flags != 0 {
+			t.Fatalf("seeded key should carry no flags, got %d", seeded.Flags)
+		}
+		return sessionID
+	}
+
+	t.Run("unheld legacy key is reclaimed", func(t *testing.T) {
+		key := fmt.Sprintf("unheld-%d", time.Now().UnixNano())
+		writeLegacyKey(t, key, false)
+
+		lock, err := backend.LockWith(key, "new-holder")
+		if err != nil {
+			t.Fatalf("LockWith failed: %v", err)
+		}
+
+		stopCh := make(chan struct{})
+		leaderCh, err := lock.Lock(stopCh)
+		if err != nil {
+			t.Fatalf("Lock should reclaim the legacy key and succeed, got: %v", err)
+		}
+		if leaderCh == nil {
+			t.Fatal("expected a leader channel after acquiring the lock")
+		}
+		defer func() { _ = lock.Unlock() }()
+
+		// The key must now be a well-formed Consul lock owned by this node.
+		pair, _, err := backend.kv.Get(backend.consulKey(key), nil)
+		if err != nil || pair == nil {
+			t.Fatalf("lock key missing after acquire: %v", err)
+		}
+		if pair.Flags != api.LockFlagValue {
+			t.Errorf("reclaimed key should carry LockFlagValue, got %d", pair.Flags)
+		}
+		if pair.Session == "" {
+			t.Error("reclaimed key should be held by a session")
+		}
+		if string(pair.Value) != "new-holder" {
+			t.Errorf("expected value new-holder, got %q", pair.Value)
+		}
+	})
+
+	t.Run("legacy key held by a session is left alone", func(t *testing.T) {
+		key := fmt.Sprintf("held-%d", time.Now().UnixNano())
+		sessionID := writeLegacyKey(t, key, true)
+
+		lock, err := backend.LockWith(key, "new-holder")
+		if err != nil {
+			t.Fatalf("LockWith failed: %v", err)
+		}
+
+		// Something holds this key, so it must not be deleted. Acquisition
+		// cannot succeed either: the helper refuses a key it did not mark, and
+		// reports that as soon as it reads the key. stopCh is a safety net so
+		// a regression that starts waiting cannot hang the test rather than
+		// the mechanism under test.
+		stopCh := make(chan struct{})
+		timer := time.AfterFunc(30*time.Second, func() { close(stopCh) })
+		defer timer.Stop()
+
+		leaderCh, err := lock.Lock(stopCh)
+		if err == nil {
+			t.Error("expected acquisition against a held legacy key to fail")
+		} else if !errors.Is(err, api.ErrLockConflict) {
+			t.Errorf("expected ErrLockConflict, got: %v", err)
+		}
+		if leaderCh != nil {
+			t.Error("must not gain leadership over a key another session holds")
+		}
+
+		pair, _, err := backend.kv.Get(backend.consulKey(key), nil)
+		if err != nil {
+			t.Fatalf("failed to read key: %v", err)
+		}
+		if pair == nil {
+			t.Fatal("a held legacy key must never be deleted")
+		}
+		if pair.Session != sessionID {
+			t.Errorf("holder session changed: want %q, got %q", sessionID, pair.Session)
+		}
+		if string(pair.Value) != "legacy-holder" {
+			t.Errorf("holder value changed: got %q", pair.Value)
+		}
+	})
 }
