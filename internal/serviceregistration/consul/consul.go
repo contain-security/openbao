@@ -46,6 +46,12 @@ const (
 	// large max_retries would leave shutdown blocked for minutes.
 	maxRegisterBackoff = 30 * time.Second
 
+	// Cap on the doubling itself, so a large max_retries cannot overflow the
+	// duration into a negative value and turn the retry loop into a hot spin.
+	// Lossless as long as 1<<maxBackoffShift seconds >= maxRegisterBackoff,
+	// which registerBackoff's test asserts.
+	maxBackoffShift = 5
+
 	// Timeout on the HTTP client used to talk to the Consul agent. The check
 	// TTL is derived from it: a refresh that is merely slow must not be able
 	// to outlive the TTL and flap a healthy node out of the catalog.
@@ -494,11 +500,24 @@ func (c *consulServiceRegistration) NotifyInitializedStateChange(isInitialized b
 	return c.updateState(func(s *serviceregistration.State) { s.IsInitialized = isInitialized })
 }
 
-// registerService registers the service with Consul
+// registerBackoff is how long to wait before retry number attempt+1.
+//
+// The doubling is capped as well as the result: without that, a large
+// max_retries overflows the duration into a negative value, which fires the
+// timer immediately and turns the retry into an unthrottled loop against the
+// Consul client.
+func registerBackoff(attempt int) time.Duration {
+	shift := min(attempt+1, maxBackoffShift)
+	return min(time.Duration(1<<shift)*time.Second, maxRegisterBackoff) + 100*time.Millisecond
+}
+
 // errNoServicePort is permanent: no amount of retrying supplies a port, so
 // callers stop rather than logging the same failure every interval.
 var errNoServicePort = errors.New("service port must be specified")
 
+// registerService publishes the service and its health check, retrying a
+// transient Consul failure with a capped backoff. It must be called only
+// after setIDs, which Run does before starting the maintenance goroutine.
 func (c *consulServiceRegistration) registerService(shutdownCh <-chan struct{}) error {
 	if c.config.ServicePort == 0 {
 		return errNoServicePort
@@ -554,8 +573,7 @@ func (c *consulServiceRegistration) registerService(shutdownCh <-chan struct{}) 
 			// Capped exponential backoff, interruptible: this runs on the
 			// goroutine shutdown waits for, so an uninterruptible sleep here
 			// stalls the whole process exit.
-			backoff := min(time.Duration(1<<(i+1))*time.Second, maxRegisterBackoff) + 100*time.Millisecond
-			timer := time.NewTimer(backoff)
+			timer := time.NewTimer(registerBackoff(i))
 			select {
 			case <-timer.C:
 			case <-shutdownCh:

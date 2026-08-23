@@ -518,7 +518,12 @@ func TestConsulServiceRegistration_Run_DoesNotAddToCallersWaitGroup(t *testing.T
 	})
 
 	t.Run("enabled", func(t *testing.T) {
+		// Deliberately unroutable. This subtest is about the WaitGroup
+		// contract, not about reaching Consul, and the ids are deterministic
+		// now -- against the default loopback agent it would have shared an
+		// id with, and so deregistered, a real OpenBao running locally.
 		reg, err := NewConsulServiceRegistration(map[string]string{
+			"address":         "127.0.0.1:1",
 			"service":         "openbao",
 			"service_address": "127.0.0.1",
 			"service_port":    "8200",
@@ -534,14 +539,27 @@ func TestConsulServiceRegistration_Run_DoesNotAddToCallersWaitGroup(t *testing.T
 			t.Fatalf("Run returned error: %v", err)
 		}
 
-		// Run must have registered its own goroutine with the WaitGroup, so
-		// shutdown actually waits for deregistration to finish.
-		close(shutdownCh)
 		done := make(chan struct{})
 		go func() {
 			wg.Wait()
 			close(done)
 		}()
+
+		// Wait must not return while the goroutine is still running. Checking
+		// only after shutdown would pass just as happily against a bare "go
+		// fn()" that never registered with the caller's WaitGroup at all,
+		// which is the third way to get this wrong and the one a passing
+		// Wait cannot otherwise distinguish. The address is unroutable, so
+		// the maintenance loop provably keeps running until shutdown.
+		select {
+		case <-done:
+			t.Fatal("wg.Wait returned before shutdown: Run did not register its goroutine with the caller's WaitGroup")
+		case <-time.After(250 * time.Millisecond):
+		}
+
+		// And it must return once shutdown completes, so Core actually waits
+		// for deregistration rather than exiting from under it.
+		close(shutdownCh)
 		select {
 		case <-done:
 		case <-time.After(30 * time.Second):
@@ -616,6 +634,36 @@ func TestConsulServiceRegistration_CheckTTL(t *testing.T) {
 		if ttl <= interval+consulHTTPTimeout {
 			t.Errorf("check_timeout %s: TTL %s leaves no room for a refresh that stalls for the full HTTP timeout %s",
 				interval, ttl, consulHTTPTimeout)
+		}
+	}
+}
+
+// TestConsulServiceRegistration_RegisterBackoff pins the retry schedule and,
+// more importantly, that it stays positive and bounded for any max_retries an
+// operator might set. An unbounded shift overflows the duration negative,
+// which fires the timer immediately and turns the retry into a hot loop.
+func TestConsulServiceRegistration_RegisterBackoff(t *testing.T) {
+	// The cap is only lossless while a full shift still exceeds the ceiling.
+	if got := time.Duration(1<<maxBackoffShift) * time.Second; got < maxRegisterBackoff {
+		t.Fatalf("maxBackoffShift yields %s, which truncates the progression below maxRegisterBackoff %s", got, maxRegisterBackoff)
+	}
+
+	want := []time.Duration{2, 4, 8, 16, 30, 30}
+	for i, w := range want {
+		expected := w*time.Second + 100*time.Millisecond
+		if got := registerBackoff(i); got != expected {
+			t.Errorf("attempt %d: expected %s, got %s", i, expected, got)
+		}
+	}
+
+	// Anything an operator could plausibly configure, plus well beyond it.
+	for _, attempt := range []int{6, 34, 62, 63, 1000} {
+		got := registerBackoff(attempt)
+		if got <= 0 {
+			t.Errorf("attempt %d: backoff must stay positive, got %s", attempt, got)
+		}
+		if got > maxRegisterBackoff+100*time.Millisecond {
+			t.Errorf("attempt %d: backoff %s exceeds the ceiling %s", attempt, got, maxRegisterBackoff)
 		}
 	}
 }
