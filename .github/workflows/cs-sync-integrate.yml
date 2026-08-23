@@ -1,6 +1,8 @@
 # contain-security fork: continuously sync upstream into the integration branch.
 # 1. Fast-forward the pristine upstream-mirror branch to upstream/main.
-# 2. Merge upstream/main into `integration` (the fork line carrying Consul).
+# 2. Merge origin/main (promotion merges + fork CI fixes; keeps promotion PRs
+#    out of the strict-rule BEHIND state) and then upstream/main into
+#    `integration` (the fork line carrying Consul).
 #    - conflict  -> open/refresh a tracking issue and stop (no auto-resolve)
 #    - clean     -> `go mod tidy`, push integration, run full validation
 # Driven from main (default branch) on a schedule so the workflow file is
@@ -52,23 +54,34 @@ jobs:
         # the fast-forward-only guarantee we want; `git push --ff-only` is not a
         # real flag (errors with "unknown option `ff-only'") so it is omitted.
         run: git push origin upstream/main:refs/heads/upstream-mirror || echo "upstream-mirror not fast-forwardable (non-fatal)"
-      - name: Merge upstream into integration
+      - name: Merge main and upstream into integration
         id: merge
         env:
           GOTOOLCHAIN: auto
         run: |
-          set -uo pipefail
-          if git merge --no-edit --no-ff upstream/main; then
+          set -euo pipefail
+          # origin/main first: promotion merge commits and fork CI fixes land
+          # on main only. Branch protection's strict up-to-date rule means a
+          # promotion PR whose integration head lacks main's tip sits on
+          # BEHIND forever and auto-merge never fires, so integration must
+          # continuously absorb main.
+          git fetch --no-tags origin main
+          status=clean
+          for src in origin/main upstream/main; do
+            if ! git merge --no-edit --no-ff "$src"; then
+              git merge --abort || true
+              status=conflict
+              break
+            fi
+          done
+          if [ "$status" = "clean" ]; then
             go mod tidy
             if ! git diff --quiet -- go.mod go.sum; then
               git add go.mod go.sum
               git commit -m "Update go modules after upstream merge"
             fi
-            echo "status=clean" >> "$GITHUB_OUTPUT"
-          else
-            git merge --abort || true
-            echo "status=conflict" >> "$GITHUB_OUTPUT"
           fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
       - name: Push integration (clean merge)
         if: steps.merge.outputs.status == 'clean'
         run: git push origin HEAD:integration
@@ -81,7 +94,7 @@ jobs:
             const label = 'cs:merge-conflict';
             const title = 'Upstream sync: merge conflict on integration';
             const body = [
-              'Automated upstream merge into `integration` hit conflicts and was aborted.',
+              'Automated merge into `integration` (main back-merge or upstream) hit conflicts and was aborted.',
               '`integration` is unchanged. Resolve manually on a `fix/merge-*` branch and',
               'merge into `integration` (which re-triggers validation).',
               '',
