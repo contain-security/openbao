@@ -1,6 +1,11 @@
 # contain-security fork: dependency review on PRs.
 # Blocks PRs that introduce dependencies with known high+ severity vulns.
 # Requires the dependency graph (enabled on this repo).
+#
+# Promotion PRs (integration -> main) import upstream's dependency set
+# wholesale; their vulns cannot be remediated at promotion time and are
+# tracked continuously by Dependabot alerts, cs-trivy and cs-govulncheck.
+# Those PRs run warn-only (report, never fail); every other PR is a hard gate.
 name: cs-dependency-review
 
 on:
@@ -8,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write # summary comment
 
 jobs:
   dependency-review:
@@ -17,4 +23,5 @@ jobs:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
-          comment-summary-in-pr: on-failure
+          comment-summary-in-pr: always
+          warn-only: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'integration' }}
