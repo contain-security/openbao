@@ -162,12 +162,17 @@ func NewSystemBackend(core *Core, logger log.Logger) *SystemBackend {
 	b.Paths = append(b.Paths, b.loginMFAPaths()...)
 	b.Paths = append(b.Paths, b.introspectionPaths()...)
 	b.Paths = append(b.Paths, b.workflowPaths()...)
+	b.Paths = append(b.Paths, b.externalKeysPaths()...)
 
 	if core.rawEnabled {
 		b.Paths = append(b.Paths, b.rawPaths()...)
 	}
 	if backend := core.GetRaftBackend(); backend != nil {
 		b.Paths = append(b.Paths, b.raftStoragePaths()...)
+	}
+
+	if core.allowUnauthedWorkflows {
+		b.PathsSpecial.Unauthenticated = append(b.PathsSpecial.Unauthenticated, "workflows/unauthed-execute/*")
 	}
 
 	return b
@@ -210,7 +215,7 @@ func (b *SystemBackend) handleCORSRead(ctx context.Context, req *logical.Request
 
 	enabled := corsConf.IsEnabled()
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"enabled": enabled,
 		},
 	}
@@ -550,7 +555,7 @@ func (b *SystemBackend) handlePluginCatalogRead(ctx context.Context, _ *logical.
 		}
 	}
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"name":        plugin.Name,
 		"args":        plugin.Args,
 		"command":     command,
@@ -648,7 +653,7 @@ func (b *SystemBackend) handlePluginReloadUpdate(ctx context.Context, req *logic
 	}
 
 	r := logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"reload_id": req.ID,
 		},
 	}
@@ -703,7 +708,7 @@ func (b *SystemBackend) handleAuditedHeaderRead(ctx context.Context, req *logica
 	}
 
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			header: settings,
 		},
 	}, nil
@@ -714,7 +719,7 @@ func (b *SystemBackend) handleAuditedHeadersRead(ctx context.Context, req *logic
 	headerConfig := b.Core.AuditedHeadersConfig()
 
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"headers": headerConfig.Headers,
 		},
 	}, nil
@@ -756,7 +761,7 @@ func (b *SystemBackend) handleCapabilities(ctx context.Context, req *logical.Req
 	}
 
 	ret := &logical.Response{
-		Data: map[string]interface{}{},
+		Data: map[string]any{},
 	}
 
 	paths := d.Get("paths").([]string)
@@ -822,7 +827,7 @@ func (b *SystemBackend) handleRekeyRetrieve(
 
 	// Format the status
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"nonce":       backup.Nonce,
 			"keys":        backup.Keys,
 			"keys_base64": keysB64,
@@ -864,8 +869,8 @@ func (b *SystemBackend) handleRekeyDeleteRecovery(ctx context.Context, req *logi
 	return b.handleRekeyDelete(ctx, req, data, true)
 }
 
-func (b *SystemBackend) mountInfo(ctx context.Context, entry *routing.MountEntry) map[string]interface{} {
-	info := map[string]interface{}{
+func (b *SystemBackend) mountInfo(ctx context.Context, entry *routing.MountEntry) map[string]any {
+	info := map[string]any{
 		"type":                    entry.Type,
 		"description":             entry.Description,
 		"accessor":                entry.Accessor,
@@ -878,7 +883,7 @@ func (b *SystemBackend) mountInfo(ctx context.Context, entry *routing.MountEntry
 		"running_plugin_version":  entry.RunningVersion,
 		"running_sha256":          entry.RunningSha256,
 	}
-	entryConfig := map[string]interface{}{
+	entryConfig := map[string]any{
 		"default_lease_ttl": int64(entry.Config.DefaultLeaseTTL.Seconds()),
 		"max_lease_ttl":     int64(entry.Config.MaxLeaseTTL.Seconds()),
 		"force_no_cache":    entry.Config.ForceNoCache,
@@ -904,7 +909,7 @@ func (b *SystemBackend) mountInfo(ctx context.Context, entry *routing.MountEntry
 		entryConfig["token_type"] = entry.Config.TokenType.String()
 	}
 	if entry.Config.UserLockoutConfig != nil {
-		userLockoutConfig := map[string]interface{}{
+		userLockoutConfig := map[string]any{
 			"user_lockout_counter_reset_duration": int64(entry.Config.UserLockoutConfig.LockoutCounterReset.Seconds()),
 			"user_lockout_threshold":              entry.Config.UserLockoutConfig.LockoutThreshold,
 			"user_lockout_duration":               int64(entry.Config.UserLockoutConfig.LockoutDuration.Seconds()),
@@ -934,7 +939,7 @@ func (b *SystemBackend) handleMountTable(ctx context.Context, req *logical.Reque
 	defer b.Core.mountsLock.RUnlock()
 
 	resp := &logical.Response{
-		Data: make(map[string]interface{}),
+		Data: make(map[string]any),
 	}
 
 	for _, entry := range b.Core.mounts.Entries {
@@ -970,7 +975,7 @@ func (b *SystemBackend) handleMount(ctx context.Context, req *logical.Request, d
 	var config routing.MountConfig
 	var apiConfig routing.APIMountConfig
 
-	configMap := data.Get("config").(map[string]interface{})
+	configMap := data.Get("config").(map[string]any)
 	// Augmenting configMap for some config options to treat them as comma separated entries
 	err := expandStringValsWithCommas(configMap)
 	if err != nil {
@@ -1194,22 +1199,6 @@ func handleError(
 	}
 }
 
-// Performs a similar function to handleError, but upon seeing a ReadOnlyError
-// will actually strip it out to prevent forwarding
-func handleErrorNoReadOnlyForward(
-	err error,
-) (*logical.Response, error) {
-	if logical.ShouldForward(err) {
-		return nil, errors.New("operation could not be completed as storage is read-only")
-	}
-	switch err.(type) {
-	case logical.HTTPCodedError:
-		return logical.ErrorResponse(err.Error()), err
-	default:
-		return logical.ErrorResponse(err.Error()), logical.ErrInvalidRequest
-	}
-}
-
 // handleUnmount is used to unmount a path
 func (b *SystemBackend) handleUnmount(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	path := data.Get("path").(string)
@@ -1361,7 +1350,7 @@ func (b *SystemBackend) handleRemount(ctx context.Context, req *logical.Request,
 	}(migrationID)
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"migration_id": migrationID,
 		},
 	}
@@ -1434,7 +1423,7 @@ func (b *SystemBackend) handleRemountStatusCheck(ctx context.Context, req *logic
 		return nil, nil
 	}
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"migration_id":   migrationID,
 			"migration_info": migrationInfo,
 		},
@@ -1475,7 +1464,7 @@ func (b *SystemBackend) handleTuneReadCommon(ctx context.Context, path string) (
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"description":       mountEntry.Description,
 			"default_lease_ttl": int(sysView.DefaultLeaseTTL().Seconds()),
 			"max_lease_ttl":     int(sysView.MaxLeaseTTL().Seconds()),
@@ -1671,7 +1660,7 @@ func (b *SystemBackend) handleTuneWriteCommon(ctx context.Context, path string, 
 
 		// user-lockout config
 		var apiUserLockoutConfig routing.APIUserLockoutConfig
-		userLockoutConfigMap := data.Get("user_lockout_config").(map[string]interface{})
+		userLockoutConfigMap := data.Get("user_lockout_config").(map[string]any)
 		if len(userLockoutConfigMap) != 0 {
 			err := mapstructure.Decode(userLockoutConfigMap, &apiUserLockoutConfig)
 			if err != nil {
@@ -1967,7 +1956,7 @@ func (b *SystemBackend) handleLeaseLookup(ctx context.Context, req *logical.Requ
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"id":           leaseID,
 			"issue_time":   leaseInfo.IssueTime,
 			"expire_time":  nil,
@@ -2007,10 +1996,11 @@ func (b *SystemBackend) handleLeaseLookupList(ctx context.Context, req *logical.
 	if err != nil {
 		return nil, err
 	}
+
 	keys, err := b.Core.expiration.leaseView(ns).List(ctx, prefix)
 	if err != nil {
 		b.Backend.Logger().Error("error listing leases", "prefix", prefix, "error", err)
-		return handleErrorNoReadOnlyForward(err)
+		return handleError(err)
 	}
 	return logical.ListResponse(keys), nil
 }
@@ -2035,7 +2025,7 @@ func (b *SystemBackend) handleRenew(ctx context.Context, req *logical.Request, d
 	resp, err := b.Core.expiration.Renew(ctx, leaseID, increment)
 	if err != nil {
 		b.Backend.Logger().Error("lease renewal failed", "lease_id", leaseID, "error", err)
-		return handleErrorNoReadOnlyForward(err)
+		return handleError(err)
 	}
 	return resp, err
 }
@@ -2061,7 +2051,7 @@ func (b *SystemBackend) handleRevoke(ctx context.Context, req *logical.Request, 
 		// Invoke the expiration manager directly
 		if err := b.Core.expiration.Revoke(revokeCtx, leaseID); err != nil {
 			b.Backend.Logger().Error("lease revocation failed", "lease_id", leaseID, "error", err)
-			return handleErrorNoReadOnlyForward(err)
+			return handleError(err)
 		}
 
 		return nil, nil
@@ -2069,7 +2059,7 @@ func (b *SystemBackend) handleRevoke(ctx context.Context, req *logical.Request, 
 
 	if err := b.Core.expiration.LazyRevoke(revokeCtx, leaseID); err != nil {
 		b.Backend.Logger().Error("lease revocation failed", "lease_id", leaseID, "error", err)
-		return handleErrorNoReadOnlyForward(err)
+		return handleError(err)
 	}
 
 	return logical.RespondWithStatusCode(nil, nil, http.StatusAccepted)
@@ -2106,7 +2096,7 @@ func (b *SystemBackend) handleRevokePrefixCommon(ctx context.Context,
 	}
 	if err != nil {
 		b.Backend.Logger().Error("revoke prefix failed", "prefix", prefix, "error", err)
-		return handleErrorNoReadOnlyForward(err)
+		return handleError(err)
 	}
 
 	if sync {
@@ -2127,7 +2117,7 @@ func (b *SystemBackend) handleAuthTable(ctx context.Context, req *logical.Reques
 	defer b.Core.authLock.RUnlock()
 
 	resp := &logical.Response{
-		Data: make(map[string]interface{}),
+		Data: make(map[string]any),
 	}
 
 	for _, entry := range b.Core.auth.Entries {
@@ -2169,7 +2159,7 @@ func (b *SystemBackend) handleReadAuth(ctx context.Context, req *logical.Request
 	return logical.ErrorResponse("No auth engine at %s", path), nil
 }
 
-func expandStringValsWithCommas(configMap map[string]interface{}) error {
+func expandStringValsWithCommas(configMap map[string]any) error {
 	configParamNameSlice := []string{
 		"audit_non_hmac_request_keys",
 		"audit_non_hmac_response_keys",
@@ -2211,7 +2201,7 @@ func (b *SystemBackend) handleEnableAuth(ctx context.Context, req *logical.Reque
 	var config routing.MountConfig
 	var apiConfig routing.APIMountConfig
 
-	configMap := data.Get("config").(map[string]interface{})
+	configMap := data.Get("config").(map[string]any)
 	// Augmenting configMap for some config options to treat them as comma separated entries
 	err := expandStringValsWithCommas(configMap)
 	if err != nil {
@@ -2520,8 +2510,8 @@ func (b *SystemBackend) handlePoliciesRead(policyType policy.Type) framework.Ope
 	}
 }
 
-func readPolicyResponse(policy *policy.Policy) map[string]interface{} {
-	data := map[string]interface{}{
+func readPolicyResponse(policy *policy.Policy) map[string]any {
+	data := map[string]any{
 		"name":                                  policy.Name,
 		"version":                               policy.DataVersion,
 		"cas_required":                          policy.CASRequired,
@@ -2862,7 +2852,7 @@ func (*SystemBackend) handlePoliciesPasswordGet(ctx context.Context, req *logica
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"policy": cfg.HCLPolicy,
 		},
 	}
@@ -2933,7 +2923,7 @@ func (*SystemBackend) handlePoliciesPasswordGenerate(ctx context.Context, req *l
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"password": password,
 		},
 	}
@@ -2964,7 +2954,7 @@ func (b *SystemBackend) handlePoliciesDetailedAclList() framework.OperationFunc 
 		}
 
 		// Get detailed information for each policy
-		policyInfos := make(map[string]interface{})
+		policyInfos := make(map[string]any)
 		for _, policyName := range policies {
 			policy, err := b.Core.policyStore.GetPolicy(ctx, policyName, policy.TypeACL)
 			if err != nil {
@@ -2987,10 +2977,10 @@ func (b *SystemBackend) handleAuditTable(ctx context.Context, req *logical.Reque
 	defer b.Core.auditLock.RUnlock()
 
 	resp := &logical.Response{
-		Data: make(map[string]interface{}),
+		Data: make(map[string]any),
 	}
 	for _, entry := range b.Core.audit.Entries {
-		info := map[string]interface{}{
+		info := map[string]any{
 			"path":        entry.Path,
 			"type":        entry.Type,
 			"description": entry.Description,
@@ -3019,7 +3009,7 @@ func (b *SystemBackend) handleAuditHash(ctx context.Context, req *logical.Reques
 	}
 
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"hash": hash,
 		},
 	}, nil
@@ -3115,14 +3105,14 @@ func (b *SystemBackend) handleConfigUIHeadersRead(ctx context.Context, req *logi
 	// Return multiple values if specified
 	if multivalue {
 		return &logical.Response{
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"values": values,
 			},
 		}, nil
 	}
 
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"value": values[0],
 		},
 	}, nil
@@ -3202,7 +3192,7 @@ func (b *SystemBackend) handleKeyStatus(ctx context.Context, req *logical.Reques
 	}
 
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"term":         info.Term,
 			"install_time": info.InstallTime.Format(time.RFC3339Nano),
 			"encryptions":  info.Encryptions,
@@ -3284,7 +3274,7 @@ func (b *SystemBackend) handleWrappingUnwrap(ctx context.Context, req *logical.R
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{},
+		Data: map[string]any{},
 	}
 
 	if len(response) == 0 {
@@ -3400,7 +3390,7 @@ func (b *SystemBackend) handleMetrics(ctx context.Context, req *logical.Request,
 
 func (b *SystemBackend) handleInFlightRequestData(_ context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			logical.HTTPContentType: "text/plain",
 			logical.HTTPStatusCode:  http.StatusInternalServerError,
 		},
@@ -3548,7 +3538,7 @@ func (b *SystemBackend) handleHostInfo(ctx context.Context, req *logical.Request
 		return nil, errors.New("unable to collect host information: nil HostInfo")
 	}
 
-	respData := map[string]interface{}{
+	respData := map[string]any{
 		"timestamp": info.Timestamp,
 	}
 	if info.CPU != nil {
@@ -3628,7 +3618,7 @@ func (b *SystemBackend) handleWrappingLookup(ctx context.Context, req *logical.R
 	creationPath := cubbyResp.Data["creation_path"]
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{},
+		Data: map[string]any{},
 	}
 	if creationTTLRaw != nil {
 		creationTTL, err := creationTTLRaw.(json.Number).Int64()
@@ -3750,7 +3740,7 @@ func (b *SystemBackend) handleWrappingRewrap(ctx context.Context, req *logical.R
 	// Return response in "response"; wrapping code will detect the rewrap and
 	// slot in instead of nesting
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"response": response,
 		},
 		WrapInfo: &wrapping.ResponseWrapInfo{
@@ -3814,7 +3804,7 @@ func (b *SystemBackend) pathHashWrite(ctx context.Context, req *logical.Request,
 
 	// Generate the response
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"sum": retStr,
 		},
 	}
@@ -3839,7 +3829,7 @@ func hasMountAccess(ctx context.Context, acl *policy.ACL, path string) bool {
 	}
 
 	var aclCapabilitiesGiven bool
-	walkFn := func(s string, v interface{}) bool {
+	walkFn := func(s string, v any) bool {
 		if v == nil {
 			return false
 		}
@@ -3888,11 +3878,11 @@ func (b *SystemBackend) pathInternalUIMountsRead(ctx context.Context, req *logic
 	}
 
 	resp := &logical.Response{
-		Data: make(map[string]interface{}),
+		Data: make(map[string]any),
 	}
 
-	secretMounts := make(map[string]interface{})
-	authMounts := make(map[string]interface{})
+	secretMounts := make(map[string]any)
+	authMounts := make(map[string]any)
 	resp.Data["secret"] = secretMounts
 	resp.Data["auth"] = authMounts
 
@@ -3941,7 +3931,7 @@ func (b *SystemBackend) pathInternalUIMountsRead(ctx context.Context, req *logic
 				// If this is an authed request return all the mount info
 				secretMounts[entry.Path] = b.mountInfo(ctx, entry)
 			} else {
-				secretMounts[entry.Path] = map[string]interface{}{
+				secretMounts[entry.Path] = map[string]any{
 					"type":        entry.Type,
 					"description": entry.Description,
 					"options":     entry.Options,
@@ -3958,7 +3948,7 @@ func (b *SystemBackend) pathInternalUIMountsRead(ctx context.Context, req *logic
 				// If this is an authed request return all the mount info
 				authMounts[entry.Path] = b.mountInfo(ctx, entry)
 			} else {
-				authMounts[entry.Path] = map[string]interface{}{
+				authMounts[entry.Path] = map[string]any{
 					"type":        entry.Type,
 					"description": entry.Description,
 					"options":     entry.Options,
@@ -4086,7 +4076,7 @@ func (b *SystemBackend) pathInternalCountersTokens(ctx context.Context, req *log
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"counters": activeTokens,
 		},
 	}
@@ -4101,7 +4091,7 @@ func (b *SystemBackend) pathInternalCountersEntities(ctx context.Context, req *l
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"counters": activeEntities,
 		},
 	}
@@ -4119,7 +4109,7 @@ func (b *SystemBackend) pathInternalInspectRouter(ctx context.Context, req *logi
 			return nil, err
 		}
 		resp := &logical.Response{
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				tag: inspectableRouter,
 			},
 		}
@@ -4146,13 +4136,13 @@ func (b *SystemBackend) pathInternalInspectRequest(ctx context.Context, req *log
 		return nil, fmt.Errorf("failed to serialize request: %w", err)
 	}
 
-	var reqAuditable map[string]interface{}
+	var reqAuditable map[string]any
 	if err := json.Unmarshal(reqMarshaled, &reqAuditable); err != nil {
 		return nil, fmt.Errorf("failed to unserialize request: %w", err)
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"data":                d.Raw,
 			"req":                 reqAuditable,
 			"entity":              entity,
@@ -4191,7 +4181,7 @@ func (b *SystemBackend) pathInternalUIResultantACL(ctx context.Context, req *log
 	}
 
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"root": false,
 		},
 	}
@@ -4201,10 +4191,10 @@ func (b *SystemBackend) pathInternalUIResultantACL(ctx context.Context, req *log
 		return resp, nil
 	}
 
-	exact := map[string]interface{}{}
-	glob := map[string]interface{}{}
+	exact := map[string]any{}
+	glob := map[string]any{}
 
-	walkFn := func(pt map[string]interface{}, s string, v interface{}) {
+	walkFn := func(pt map[string]any, s string, v any) {
 		if v == nil {
 			return
 		}
@@ -4243,7 +4233,7 @@ func (b *SystemBackend) pathInternalUIResultantACL(ctx context.Context, req *log
 			capabilities = []string{policy.DenyCapability}
 		}
 
-		res := map[string]interface{}{}
+		res := map[string]any{}
 		if len(capabilities) > 0 {
 			res["capabilities"] = capabilities
 		}
@@ -4266,12 +4256,12 @@ func (b *SystemBackend) pathInternalUIResultantACL(ctx context.Context, req *log
 		pt[s] = res
 	}
 
-	exactWalkFn := func(s string, v interface{}) bool {
+	exactWalkFn := func(s string, v any) bool {
 		walkFn(exact, s, v)
 		return false
 	}
 
-	globWalkFn := func(s string, v interface{}) bool {
+	globWalkFn := func(s string, v any) bool {
 		walkFn(glob, s, v)
 		return false
 	}
@@ -4309,10 +4299,10 @@ func (b *SystemBackend) pathInternalOpenAPI(ctx context.Context, req *logical.Re
 	genericMountPaths, _ := d.Get("generic_mount_paths").(bool)
 
 	procMountGroup := func(group, mountPrefix string) error {
-		for mount, entry := range resp.Data[group].(map[string]interface{}) {
+		for mount, entry := range resp.Data[group].(map[string]any) {
 
 			var pluginType string
-			if t, ok := entry.(map[string]interface{})["type"]; ok {
+			if t, ok := entry.(map[string]any)["type"]; ok {
 				pluginType = t.(string)
 			}
 
@@ -4325,7 +4315,7 @@ func (b *SystemBackend) pathInternalOpenAPI(ctx context.Context, req *logical.Re
 			req := &logical.Request{
 				Operation: logical.HelpOperation,
 				Storage:   req.Storage,
-				Data:      map[string]interface{}{"requestResponsePrefix": pluginType},
+				Data:      map[string]any{"requestResponsePrefix": pluginType},
 			}
 
 			resp, err := backend.HandleRequest(ctx, req)
@@ -4340,7 +4330,7 @@ func (b *SystemBackend) pathInternalOpenAPI(ctx context.Context, req *logical.Re
 			switch v := resp.Data["openapi"].(type) {
 			case *framework.OASDocument:
 				backendDoc = v
-			case map[string]interface{}:
+			case map[string]any:
 				backendDoc, err = framework.NewOASDocumentFromMap(v)
 				if err != nil {
 					return err
@@ -4431,7 +4421,7 @@ func (b *SystemBackend) pathInternalOpenAPI(ctx context.Context, req *logical.Re
 	}
 
 	resp = &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			logical.HTTPStatusCode:  200,
 			logical.HTTPRawBody:     buf,
 			logical.HTTPContentType: "application/json",
@@ -4579,7 +4569,7 @@ func (b *SystemBackend) handleSealStatus(ctx context.Context, req *logical.Reque
 		return nil, err
 	}
 	httpResp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			logical.HTTPStatusCode:  200,
 			logical.HTTPRawBody:     buf,
 			logical.HTTPContentType: "application/json",
@@ -4598,7 +4588,7 @@ func (b *SystemBackend) handleLeaderStatus(ctx context.Context, req *logical.Req
 		return nil, err
 	}
 	httpResp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			logical.HTTPStatusCode:  200,
 			logical.HTTPRawBody:     buf,
 			logical.HTTPContentType: "application/json",
@@ -4615,7 +4605,7 @@ func (b *SystemBackend) handleHAStatus(ctx context.Context, req *logical.Request
 	}
 
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"nodes": nodes,
 		},
 	}, nil
@@ -4643,12 +4633,12 @@ func (b *SystemBackend) handleVersionHistoryList(ctx context.Context, req *logic
 		return versions[i].TimestampInstalled.Before(versions[j].TimestampInstalled)
 	})
 
-	respKeyInfo := map[string]interface{}{}
+	respKeyInfo := map[string]any{}
 
 	for i, v := range versions {
 		respKeys = append(respKeys, v.Version)
 
-		entry := map[string]interface{}{
+		entry := map[string]any{
 			"timestamp_installed": v.TimestampInstalled.Format(time.RFC3339),
 			"commit_date":         v.CommitDate,
 			"previous_version":    nil,
@@ -4668,7 +4658,7 @@ func (b *SystemBackend) handleLoggersRead(ctx context.Context, req *logical.Requ
 	b.Core.allLoggersLock.RLock()
 	defer b.Core.allLoggersLock.RUnlock()
 
-	loggers := make(map[string]interface{})
+	loggers := make(map[string]any)
 	warnings := make([]string, 0)
 
 	for _, logger := range b.Core.allLoggers {
@@ -4742,7 +4732,7 @@ func (b *SystemBackend) handleLoggersByNameRead(ctx context.Context, req *logica
 	b.Core.allLoggersLock.RLock()
 	defer b.Core.allLoggersLock.RUnlock()
 
-	loggers := make(map[string]interface{})
+	loggers := make(map[string]any)
 	warnings := make([]string, 0)
 
 	for _, logger := range b.Core.allLoggers {

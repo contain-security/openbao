@@ -69,7 +69,7 @@ func TestReadCommand_Run(t *testing.T) {
 				"-field", "not-a-real-field",
 				"secret/read/foo",
 			},
-			"not present in secret",
+			"not present",
 			1,
 		},
 	}
@@ -84,7 +84,7 @@ func TestReadCommand_Run(t *testing.T) {
 				client, closer := testVaultServer(t)
 				defer closer()
 
-				if _, err := client.Logical().Write("secret/read/foo", map[string]interface{}{
+				if _, err := client.Logical().Write("secret/read/foo", map[string]any{
 					"foo": "bar",
 				}); err != nil {
 					t.Fatal(err)

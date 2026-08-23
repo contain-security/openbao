@@ -30,10 +30,6 @@ const (
 
 	// DefaultRateLimitStaleAge defines the default stale age of a client limiter.
 	DefaultRateLimitStaleAge = 3 * time.Minute
-
-	// EnvVaultEnableRateLimitAuditLogging is used to enable audit logging of
-	// requests that get rejected due to rate limit quota violations.
-	EnvVaultEnableRateLimitAuditLogging = "VAULT_ENABLE_RATE_LIMIT_AUDIT_LOGGING"
 )
 
 // Ensure that RateLimitQuota implements the Quota interface
@@ -232,7 +228,7 @@ func (rlq *RateLimitQuota) purgeBlockedClients() {
 	for {
 		select {
 		case t := <-ticker.C:
-			rlq.blockedClients.Range(func(key, value interface{}) bool {
+			rlq.blockedClients.Range(func(key, value any) bool {
 				blockedAt := value.(time.Time)
 				if t.Sub(blockedAt) >= rlq.BlockInterval {
 					rlq.blockedClients.Delete(key)
@@ -264,7 +260,7 @@ func (rlq *RateLimitQuota) numBlockedClients() int {
 	defer rlq.lock.RUnlock()
 
 	size := 0
-	rlq.blockedClients.Range(func(_, _ interface{}) bool {
+	rlq.blockedClients.Range(func(_, _ any) bool {
 		size++
 		return true
 	})

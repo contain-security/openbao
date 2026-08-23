@@ -1027,20 +1027,20 @@ func TestNamespaceStorage(t *testing.T) {
 }
 
 func TestNamespaceDeletionSealingInteraction(t *testing.T) {
-	t.Parallel()
-
-	c, keys, _ := TestCoreUnsealed(t)
-	s := c.namespaceStore
-	ctx := namespace.RootContext(t.Context())
-
-	namespaces := []*namespace.Namespace{
-		{Path: "ns1/"},
-		{Path: "ns2/"},
-		{Path: "ns3/"},
-	}
-	nsKeys := TestCoreCreateUnsealedNamespaces(t, c, namespaces...)
 
 	t.Run("cannot seal tainted namespace", func(t *testing.T) {
+		t.Parallel()
+
+		c, _, _ := TestCoreUnsealed(t)
+		s := c.namespaceStore
+		ctx := namespace.RootContext(t.Context())
+		namespaces := []*namespace.Namespace{
+			{Path: "ns1/"},
+			{Path: "ns2/"},
+			{Path: "ns3/"},
+		}
+		TestCoreCreateUnsealedNamespaces(t, c, namespaces...)
+
 		_, err := s.DeleteNamespace(ctx, "ns1")
 		require.NoError(t, err)
 
@@ -1059,6 +1059,18 @@ func TestNamespaceDeletionSealingInteraction(t *testing.T) {
 	})
 
 	t.Run("seal core while deleting namespace", func(t *testing.T) {
+		t.Parallel()
+
+		c, keys, _ := TestCoreUnsealed(t)
+		s := c.namespaceStore
+		ctx := namespace.RootContext(t.Context())
+		namespaces := []*namespace.Namespace{
+			{Path: "ns1/"},
+			{Path: "ns2/"},
+			{Path: "ns3/"},
+		}
+		nsKeys := TestCoreCreateUnsealedNamespaces(t, c, namespaces...)
+
 		_, err := s.DeleteNamespace(ctx, "ns2")
 		require.NoError(t, err)
 
@@ -1097,6 +1109,18 @@ func TestNamespaceDeletionSealingInteraction(t *testing.T) {
 	})
 
 	t.Run("cannot delete currently sealed namespace", func(t *testing.T) {
+		t.Parallel()
+
+		c, _, _ := TestCoreUnsealed(t)
+		s := c.namespaceStore
+		ctx := namespace.RootContext(t.Context())
+		namespaces := []*namespace.Namespace{
+			{Path: "ns1/"},
+			{Path: "ns2/"},
+			{Path: "ns3/"},
+		}
+		TestCoreCreateUnsealedNamespaces(t, c, namespaces...)
+
 		require.NoError(t, s.SealNamespace(ctx, "ns3"))
 
 		_, err := s.DeleteNamespace(ctx, "ns3")
@@ -1250,8 +1274,12 @@ func TestNamespaceSealResourcesLifecycle(t *testing.T) {
 
 		// leases
 		require.EventuallyWithT(t, func(collect *assert.CollectT) {
+			c.stateLock.RLock()
+			expiration := c.expiration
+			c.stateLock.RUnlock()
+
 			found := false
-			c.expiration.pending.Range(func(keyRaw any, _ any) bool {
+			expiration.pending.Range(func(keyRaw any, _ any) bool {
 				key := keyRaw.(string)
 				if ns.MatchesID(key) {
 					found = true
@@ -1499,8 +1527,12 @@ func TestNamespaceSealManyLeases(t *testing.T) {
 
 			// leases
 			require.EventuallyWithT(t, func(collect *assert.CollectT) {
+				c.stateLock.RLock()
+				expiration := c.expiration
+				c.stateLock.RUnlock()
+
 				count := 0
-				c.expiration.pending.Range(func(keyRaw any, _ any) bool {
+				expiration.pending.Range(func(keyRaw any, _ any) bool {
 					key := keyRaw.(string)
 					if ns.MatchesID(key) {
 						count += 1
@@ -1517,7 +1549,7 @@ func TestNamespaceSealManyLeases(t *testing.T) {
 					}
 
 					found := false
-					c.expiration.pending.Range(func(keyRaw any, _ any) bool {
+					expiration.pending.Range(func(keyRaw any, _ any) bool {
 						key := keyRaw.(string)
 						found = found || key == leaseId
 						return true
@@ -1839,8 +1871,12 @@ func TestNamespaceManyLeases(t *testing.T) {
 
 			// leases
 			require.EventuallyWithT(t, func(collect *assert.CollectT) {
+				c.stateLock.RLock()
+				expiration := c.expiration
+				c.stateLock.RUnlock()
+
 				count := 0
-				c.expiration.pending.Range(func(keyRaw any, _ any) bool {
+				expiration.pending.Range(func(keyRaw any, _ any) bool {
 					key := keyRaw.(string)
 					if ns.MatchesID(key) {
 						count += 1
@@ -1857,7 +1893,7 @@ func TestNamespaceManyLeases(t *testing.T) {
 					}
 
 					found := false
-					c.expiration.pending.Range(func(keyRaw any, _ any) bool {
+					expiration.pending.Range(func(keyRaw any, _ any) bool {
 						key := keyRaw.(string)
 						found = found || key == leaseId
 						return true
@@ -1865,7 +1901,7 @@ func TestNamespaceManyLeases(t *testing.T) {
 					require.True(collect, found, "did not find expected lease: %v", leaseId)
 					return true
 				})
-			}, time.Second, 100*time.Millisecond)
+			}, 3*time.Second, 100*time.Millisecond)
 
 		}
 	}

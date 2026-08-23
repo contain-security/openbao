@@ -80,17 +80,17 @@ func TestCert_RoleResolve(t *testing.T) {
 
 func testAccStepResolveRoleWithName(t *testing.T, connState tls.ConnectionState, certName string) logicaltest.TestStep {
 	return logicaltest.TestStep{
-		Operation:       logical.ResolveRoleOperation,
+		Operation:       logical.UpdateOperation,
 		Path:            "login",
 		Unauthenticated: true,
 		ConnState:       &connState,
 		Check: func(resp *logical.Response) error {
-			if resp.Data["role"] != certName {
-				t.Fatalf("Role was not as expected. Expected %s, received %s", certName, resp.Data["role"])
+			if resp.Auth.Metadata["cert_name"] != certName {
+				t.Fatalf("Role was not as expected. Expected %s, received %s", certName, resp.Data["cert_name"])
 			}
 			return nil
 		},
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"name": certName,
 		},
 	}
@@ -124,23 +124,23 @@ func TestCert_RoleResolveWithoutProvidingCertName(t *testing.T) {
 
 func testAccStepResolveRoleWithEmptyDataMap(t *testing.T, connState tls.ConnectionState, certName string) logicaltest.TestStep {
 	return logicaltest.TestStep{
-		Operation:       logical.ResolveRoleOperation,
+		Operation:       logical.UpdateOperation,
 		Path:            "login",
 		Unauthenticated: true,
 		ConnState:       &connState,
 		Check: func(resp *logical.Response) error {
-			if resp.Data["role"] != certName {
-				t.Fatalf("Role was not as expected. Expected %s, received %s", certName, resp.Data["role"])
+			if resp.Auth.Metadata["cert_name"] != certName {
+				t.Fatalf("Role was not as expected. Expected %s, received %s", certName, resp.Data["cert_name"])
 			}
 			return nil
 		},
-		Data: map[string]interface{}{},
+		Data: map[string]any{},
 	}
 }
 
 func testAccStepResolveRoleExpectRoleResolutionToFail(t *testing.T, connState tls.ConnectionState, certName string) logicaltest.TestStep {
 	return logicaltest.TestStep{
-		Operation:       logical.ResolveRoleOperation,
+		Operation:       logical.UpdateOperation,
 		Path:            "login",
 		Unauthenticated: true,
 		ConnState:       &connState,
@@ -160,7 +160,7 @@ func testAccStepResolveRoleExpectRoleResolutionToFail(t *testing.T, connState tl
 			}
 			return nil
 		},
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"name": certName,
 		},
 	}
@@ -168,7 +168,7 @@ func testAccStepResolveRoleExpectRoleResolutionToFail(t *testing.T, connState tl
 
 func testAccStepResolveRoleOCSPFail(t *testing.T, connState tls.ConnectionState, certName string) logicaltest.TestStep {
 	return logicaltest.TestStep{
-		Operation:       logical.ResolveRoleOperation,
+		Operation:       logical.UpdateOperation,
 		Path:            "login",
 		Unauthenticated: true,
 		ConnState:       &connState,
@@ -188,7 +188,7 @@ func testAccStepResolveRoleOCSPFail(t *testing.T, connState tls.ConnectionState,
 			}
 			return nil
 		},
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"name": certName,
 		},
 	}
@@ -295,8 +295,8 @@ func TestCert_RoleResolveOCSP(t *testing.T) {
 				CredentialBackend: b,
 				Steps: []logicaltest.TestStep{
 					testAccStepCertWithExtraParams(t, "web", ca.CertPEM(), "foo", allowed{dns: "example.com"}, false,
-						map[string]interface{}{"ocsp_enabled": true, "ocsp_fail_open": c.failOpen}),
-					testAccStepReadCertPolicy(t, "web", false, map[string]interface{}{"ocsp_enabled": true, "ocsp_fail_open": c.failOpen}),
+						map[string]any{"ocsp_enabled": true, "ocsp_fail_open": c.failOpen}),
+					testAccStepReadCertPolicy(t, "web", false, map[string]any{"ocsp_enabled": true, "ocsp_fail_open": c.failOpen}),
 					loginStep,
 					resolveStep,
 				},

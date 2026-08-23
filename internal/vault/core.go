@@ -57,6 +57,7 @@ import (
 	sr "github.com/openbao/openbao/v2/internal/serviceregistration"
 	"github.com/openbao/openbao/v2/internal/vault/barrier"
 	"github.com/openbao/openbao/v2/internal/vault/cluster"
+	ek "github.com/openbao/openbao/v2/internal/vault/external_keys"
 	"github.com/openbao/openbao/v2/internal/vault/forwarding"
 	ident "github.com/openbao/openbao/v2/internal/vault/identity"
 	"github.com/openbao/openbao/v2/internal/vault/policy"
@@ -498,8 +499,11 @@ type Core struct {
 	// pluginCatalog is used to manage plugin configurations
 	pluginCatalog *PluginCatalog
 
-	// kmsPluginCatalog provides KMS plugin functionality
+	// kmsPluginCatalog provides KMS plugin functionality.
 	kmsPluginCatalog *kmsplugin.Catalog
+
+	// externalKeys manages external key storage & caches.
+	externalKeys *ek.Registry
 
 	// The userFailedLoginInfo map has user failed login information.
 	// It has user information (alias-name and mount accessor) as a key
@@ -628,6 +632,15 @@ type Core struct {
 	// Core invalidation tracker handles dispatching invalidations and
 	// refreshing the Core-adjacent caches afterwards.
 	invalidations *invalidationManager
+
+	// When awaitInvalidateHook is set early on startup, this maintains a list
+	// of connected invalidation peers. When connections blip, we maintain an
+	// invalidation state.
+	connectedInvalidationPeers *invalidationPeers
+
+	// indexManager allows caching of indices from a physical.ReplicationIndexBackend,
+	// reducing the number of calls to the underlying database.
+	indexManager *indexManager
 
 	// Whether unauthenticated workflows are allowed by this OpenBao
 	// instance.
@@ -862,6 +875,16 @@ func CreateCore(conf *CoreConfig) (*Core, error) {
 		conf.RawConfig = new(server.Config)
 	}
 
+	// Instantiate a KMS plugin catalog if none is provided. This is primarily a
+	// fallback for tests that don't run command/server.go startup code.
+	if conf.KMSPluginCatalog == nil {
+		catalog, err := kmsplugin.NewCatalog(conf.Logger, conf.RawConfig)
+		if err != nil {
+			return nil, err
+		}
+		conf.KMSPluginCatalog = catalog
+	}
+
 	clusterHeartbeatInterval := conf.ClusterHeartbeatInterval
 	if clusterHeartbeatInterval == 0 {
 		clusterHeartbeatInterval = 5 * time.Second
@@ -972,6 +995,7 @@ func CreateCore(conf *CoreConfig) (*Core, error) {
 	c.metricSink.SetGaugeWithLabels([]string{"core", "unsealed"}, 0, nil)
 
 	c.shutdownDoneCh.Store(make(chan struct{}))
+	go c.emitUnsealedStatusMetric(c.shutdownDoneCh.Load().(chan struct{}))
 
 	c.allLoggers = append(c.allLoggers, c.logger, routerLogger)
 
@@ -1032,16 +1056,55 @@ func CreateCore(conf *CoreConfig) (*Core, error) {
 	}
 	c.seal.SetCore(c)
 
-	// Create the invalidation manager.
+	// Create the invalidation manager and track connected peers for GRPC.
 	c.NewInvalidationManager()
+	c.NewInvalidationPeers()
+
+	if replicated, ok := c.underlyingPhysical.(physical.ReplicationIndexBackend); ok {
+		c.indexManager = NewIndexManager(replicated, 0)
+	}
 
 	return c, nil
 }
 
+func shouldUseGRPCInvalidation(phys physical.Backend) bool {
+	if _, ok := phys.(physical.CacheInvalidationBackend); ok {
+		return false
+	}
+
+	_, ok := phys.(physical.ReplicationIndexBackend)
+	return ok
+}
+
+func (c *Core) shouldHookInvalidate(phys physical.Backend) bool {
+	if !c.StandbyReadsEnabled() {
+		return false
+	}
+
+	_, ok := phys.(physical.CacheInvalidationBackend)
+	return ok
+}
+
 func coreInit(c *Core, conf *CoreConfig) error {
 	phys := conf.Physical
+	hookLayer := c.underlyingPhysical
+
+	haEnabled := conf.HAPhysical != nil && conf.HAPhysical.HAEnabled()
+
 	// Wrap the physical backend in a cache layer if enabled
 	cacheLogger := c.baseLogger.Named("storage.cache")
+
+	// Wrap physical for invalidation.
+	if haEnabled && shouldUseGRPCInvalidation(phys) {
+		c.logger.Info("enabling grpc-based invalidation on HA backend which doesn't natively support invalidation notifications")
+
+		grpcLogger := c.baseLogger.Named("storage.grpcinv")
+		c.allLoggers = append(c.allLoggers, grpcLogger)
+
+		phys = physical.NewWriteNotifier(phys, grpcLogger, c.SendInvalidationNotice)
+		hookLayer = phys
+	}
+
 	c.allLoggers = append(c.allLoggers, cacheLogger)
 	c.physical = physical.NewCache(phys, conf.CacheSize, cacheLogger, c.MetricSink().Sink)
 	c.physicalCache = c.physical.(physical.ToggleablePurgemonster)
@@ -1051,8 +1114,8 @@ func coreInit(c *Core, conf *CoreConfig) error {
 		c.physical = physical.NewStorageEncoding(c.physical)
 	}
 
-	if c.StandbyReadsEnabled() {
-		c.underlyingPhysical.(physical.CacheInvalidationBackend).HookInvalidate(c.Invalidate)
+	if haEnabled && c.shouldHookInvalidate(hookLayer) {
+		hookLayer.(physical.CacheInvalidationBackend).HookInvalidate(c.Invalidate)
 	}
 
 	return nil
@@ -2158,6 +2221,10 @@ func (s standardUnsealStrategy) unseal(ctx context.Context, logger log.Logger, c
 	c.clearForwardingClients()
 	c.requestForwardingConnectionLock.Unlock()
 
+	if shouldUseGRPCInvalidation(c.underlyingPhysical) {
+		c.SetupInvalidationPeers()
+	}
+
 	// Mark the active time. We do this first so it can be correlated to the logs
 	// for the active startup.
 	c.activeTime = time.Now().UTC()
@@ -2228,6 +2295,13 @@ func (readonlyUnsealStrategy) unsealShared(ctx context.Context, c *Core, standby
 	if err := c.setupNamespaceStore(ctx); err != nil {
 		return err
 	}
+
+	{
+		logger := c.baseLogger.Named("external-keys")
+		c.AddLogger(logger)
+		c.externalKeys = ek.NewRegistry(c.kmsPluginCatalog, logger)
+	}
+
 	if err := c.loadMounts(ctx, standby); err != nil {
 		return err
 	}
@@ -2427,10 +2501,9 @@ func (c *Core) preSeal() error {
 	c.stopForwarding()
 	c.stopRaftActiveNode()
 	c.cancelNamespaceDeletion()
+	c.CleanupInvalidationPeers()
+	c.invalidations.Stop()
 
-	if err := c.invalidations.Stop(); err != nil {
-		result = multierror.Append(result, fmt.Errorf("error tearing down invalidations: %w", err))
-	}
 	if err := c.teardownAudits(); err != nil {
 		result = multierror.Append(result, fmt.Errorf("error tearing down audits: %w", err))
 	}
@@ -2454,6 +2527,11 @@ func (c *Core) preSeal() error {
 	}
 	if err := c.teardownNamespaceStore(); err != nil {
 		result = multierror.Append(result, fmt.Errorf("error tearing down namespace store: %w", err))
+	}
+
+	if c.externalKeys != nil {
+		c.externalKeys.Stop(context.Background())
+		c.externalKeys = nil
 	}
 
 	if c.autoRotateCancel != nil {
@@ -2876,7 +2954,7 @@ func (c *Core) setupHeaderHMACKey(ctx context.Context) error {
 
 // SanitizedConfig returns a sanitized version of the current config.
 // See server.Config.Sanitized for specific values omitted.
-func (c *Core) SanitizedConfig() map[string]interface{} {
+func (c *Core) SanitizedConfig() map[string]any {
 	conf := c.rawConfig.Load()
 	if conf == nil {
 		return nil
@@ -2911,7 +2989,7 @@ func (c *Core) MetricSink() *metricsutil.ClusterMetricSink {
 // also allows for mocking the registry easily.
 type BuiltinRegistry interface {
 	Contains(name string, pluginType consts.PluginType) bool
-	Get(name string, pluginType consts.PluginType) (func() (interface{}, error), bool)
+	Get(name string, pluginType consts.PluginType) (func() (any, error), bool)
 	Keys(pluginType consts.PluginType) []string
 	DeprecationStatus(name string, pluginType consts.PluginType) (consts.DeprecationStatus, bool)
 }
@@ -3384,7 +3462,7 @@ func (c *Core) FinalizeInFlightReqData(reqID string, statusCode int) {
 // in-flight requests
 func (c *Core) LoadInFlightReqData() map[string]InFlightReqData {
 	currentInFlightReqMap := make(map[string]InFlightReqData)
-	c.inFlightReqData.InFlightReqMap.Range(func(key, value interface{}) bool {
+	c.inFlightReqData.InFlightReqMap.Range(func(key, value any) bool {
 		// there is only one writer to this map, so skip checking for errors
 		v := value.(InFlightReqData)
 		currentInFlightReqMap[key.(string)] = v
@@ -3517,7 +3595,7 @@ func (c *Core) LoadNodeID() (string, error) {
 
 // DetermineRoleFromLoginRequest will determine the role that should be applied to a quota for a given
 // login request
-func (c *Core) DetermineRoleFromLoginRequest(ctx context.Context, mountPoint string, data map[string]interface{}) string {
+func (c *Core) DetermineRoleFromLoginRequest(ctx context.Context, mountPoint string, data map[string]any) string {
 	c.authLock.RLock()
 	defer c.authLock.RUnlock()
 	matchingBackend := c.router.MatchingBackend(ctx, mountPoint)
@@ -3541,7 +3619,7 @@ func (c *Core) DetermineRoleFromLoginRequestFromReader(ctx context.Context, moun
 		return ""
 	}
 
-	data := make(map[string]interface{})
+	data := make(map[string]any)
 	err := jsonutil.DecodeJSONFromReader(reader, &data)
 	if err != nil {
 		return ""
@@ -3551,7 +3629,7 @@ func (c *Core) DetermineRoleFromLoginRequestFromReader(ctx context.Context, moun
 
 // doResolveRoleLocked does a login and resolve role request on the matching
 // backend. Callers should have a read lock on c.authLock
-func (c *Core) doResolveRoleLocked(ctx context.Context, mountPoint string, matchingBackend logical.Backend, data map[string]interface{}) string {
+func (c *Core) doResolveRoleLocked(ctx context.Context, mountPoint string, matchingBackend logical.Backend, data map[string]any) string {
 	resp, err := matchingBackend.HandleRequest(ctx, &logical.Request{
 		MountPoint: mountPoint,
 		Path:       "login",
@@ -3878,12 +3956,19 @@ func (c *Core) refreshRequestForwardingConnection(ctx context.Context, clusterAd
 	)
 	c.rpcForwardingClient.Start()
 
+	if _, ok := c.underlyingPhysical.(physical.CacheInvalidationBackend); !ok {
+		c.logger.Info("restarting standby as active node has changed; may enable grpc invalidation")
+		c.Restart()
+	}
+
 	return nil
 }
 
 func (c *Core) clearForwardingClients() {
 	c.logger.Debug("clearing forwarding clients")
 	defer c.logger.Debug("done clearing forwarding clients")
+
+	c.rpcForwardingClient.StopInvalidations()
 
 	if c.rpcClientConnCancelFunc != nil {
 		c.rpcClientConnCancelFunc()

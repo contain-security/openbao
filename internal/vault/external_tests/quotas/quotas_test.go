@@ -4,6 +4,10 @@
 package quotas
 
 import (
+	"encoding/json"
+	"os"
+	"path"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,10 +17,13 @@ import (
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/stretchr/testify/require"
 
+	"github.com/openbao/openbao/v2/internal/audit"
+	auditFile "github.com/openbao/openbao/v2/internal/builtin/audit/file"
 	"github.com/openbao/openbao/v2/internal/builtin/credential/userpass"
 	"github.com/openbao/openbao/v2/internal/builtin/logical/pki"
 	"github.com/openbao/openbao/v2/internal/helper/testhelpers/teststorage"
 	"github.com/openbao/openbao/v2/internal/vault"
+	"github.com/openbao/openbao/v2/internal/vault/quotas"
 )
 
 var coreConfig = &vault.CoreConfig{
@@ -25,6 +32,9 @@ var coreConfig = &vault.CoreConfig{
 	},
 	CredentialBackends: map[string]logical.Factory{
 		"userpass": userpass.Factory,
+	},
+	AuditBackends: map[string]audit.Factory{
+		"file": auditFile.Factory,
 	},
 }
 
@@ -38,7 +48,7 @@ func setupMounts(t *testing.T, client *api.Client) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Logical().Write("auth/userpass/users/foo", map[string]interface{}{
+	_, err = client.Logical().Write("auth/userpass/users/foo", map[string]any{
 		"password": "bar",
 	})
 	if err != nil {
@@ -52,7 +62,7 @@ func setupMounts(t *testing.T, client *api.Client) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Logical().Write("pki/root/generate/internal", map[string]interface{}{
+	_, err = client.Logical().Write("pki/root/generate/internal", map[string]any{
 		"common_name": "testvault.com",
 		"ttl":         "200h",
 		"ip_sans":     "127.0.0.1",
@@ -61,7 +71,7 @@ func setupMounts(t *testing.T, client *api.Client) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Logical().Write("pki/roles/test", map[string]interface{}{
+	_, err = client.Logical().Write("pki/roles/test", map[string]any{
 		"require_cn":       false,
 		"allowed_domains":  "testvault.com",
 		"allow_subdomains": true,
@@ -124,7 +134,7 @@ func TestQuotas_RateLimit_DupName(t *testing.T) {
 	vault.TestWaitActive(t, core)
 
 	// create a rate limit quota w/ 'secret' path
-	_, err := client.Logical().Write("sys/quotas/rate-limit/secret-rlq", map[string]interface{}{
+	_, err := client.Logical().Write("sys/quotas/rate-limit/secret-rlq", map[string]any{
 		"rate": 7.7,
 		"path": "secret",
 	})
@@ -135,7 +145,7 @@ func TestQuotas_RateLimit_DupName(t *testing.T) {
 	require.NotEmpty(t, s.Data)
 
 	// create a rate limit quota w/ empty path (same name)
-	_, err = client.Logical().Write("sys/quotas/rate-limit/secret-rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/secret-rlq", map[string]any{
 		"rate": 7.7,
 		"path": "",
 	})
@@ -160,14 +170,14 @@ func TestQuotas_RateLimit_DupPath(t *testing.T) {
 	client := cluster.Cores[0].Client
 	vault.TestWaitActive(t, core)
 	// create a global rate limit quota
-	_, err := client.Logical().Write("sys/quotas/rate-limit/global-rlq", map[string]interface{}{
+	_, err := client.Logical().Write("sys/quotas/rate-limit/global-rlq", map[string]any{
 		"rate": 10,
 		"path": "",
 	})
 	require.NoError(t, err)
 
 	// create a rate limit quota w/ 'secret' path
-	_, err = client.Logical().Write("sys/quotas/rate-limit/secret-rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/secret-rlq", map[string]any{
 		"rate": 7.7,
 		"path": "secret",
 	})
@@ -178,7 +188,7 @@ func TestQuotas_RateLimit_DupPath(t *testing.T) {
 	require.NotEmpty(t, s.Data)
 
 	// create a rate limit quota w/ empty path (same name)
-	_, err = client.Logical().Write("sys/quotas/rate-limit/secret-rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/secret-rlq", map[string]any{
 		"rate": 7.7,
 		"path": "",
 	})
@@ -200,7 +210,7 @@ func TestQuotas_RateLimitQuota_ExemptPaths(t *testing.T) {
 	client := cluster.Cores[0].Client
 	vault.TestWaitActive(t, core)
 
-	_, err := client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]interface{}{
+	_, err := client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]any{
 		"rate": 7.7,
 	})
 	require.NoError(t, err)
@@ -208,7 +218,7 @@ func TestQuotas_RateLimitQuota_ExemptPaths(t *testing.T) {
 	// ensure exempt paths are not empty by default
 	resp, err := client.Logical().Read("sys/quotas/config")
 	require.NoError(t, err)
-	require.NotEmpty(t, resp.Data["rate_limit_exempt_paths"].([]interface{}), "expected no exempt paths by default")
+	require.NotEmpty(t, resp.Data["rate_limit_exempt_paths"].([]any), "expected no exempt paths by default")
 
 	reqFunc := func(numSuccess, numFail *atomic.Int32) {
 		_, err := client.Logical().Read("sys/quotas/rate-limit/rlq")
@@ -229,7 +239,7 @@ func TestQuotas_RateLimitQuota_ExemptPaths(t *testing.T) {
 	// allow time (1s) for rate limit to refill before updating the quota config
 	time.Sleep(time.Second)
 
-	_, err = client.Logical().Write("sys/quotas/config", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/config", map[string]any{
 		"rate_limit_exempt_paths": []string{"sys/quotas/rate-limit"},
 	})
 	require.NoError(t, err)
@@ -252,7 +262,7 @@ func TestQuotas_RateLimitQuota_DefaultExemptPaths(t *testing.T) {
 	client := cluster.Cores[0].Client
 	vault.TestWaitActive(t, core)
 
-	_, err := client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]interface{}{
+	_, err := client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]any{
 		"rate": 1,
 	})
 	require.NoError(t, err)
@@ -269,6 +279,64 @@ func TestQuotas_RateLimitQuota_DefaultExemptPaths(t *testing.T) {
 	// If the response is nil, then we are being rate limited
 	require.NotNil(t, resp)
 	require.NotNil(t, resp.Data)
+}
+
+func TestQuotas_RateLimitQuota_AuditLogging(t *testing.T) {
+	conf, opts := teststorage.ClusterSetup(coreConfig, nil, nil)
+	opts.NoDefaultQuotas = true
+	opts.RequestResponseCallback = schema.ResponseValidatingCallback(t)
+	cluster := vault.NewTestCluster(t, conf, opts)
+	cluster.Start()
+	defer cluster.Cleanup()
+
+	core := cluster.Cores[0].Core
+	client := cluster.Cores[0].Client
+	vault.TestWaitActive(t, core)
+
+	// Enable Audit Logging
+	_, err := client.Logical().WriteWithContext(t.Context(), "sys/quotas/config", map[string]any{
+		"enable_rate_limit_audit_logging": true,
+	})
+	require.NoError(t, err)
+
+	// Create temporary audit log file
+	auditLogFile, err := os.Create(path.Join(t.TempDir(), "audit.json"))
+	require.NoError(t, err)
+
+	require.NoError(t, client.Sys().EnableAuditWithOptions("file", &api.EnableAuditOptions{
+		Type: "file",
+		Options: map[string]string{
+			"file_path": auditLogFile.Name(),
+		},
+	}))
+
+	// Set limit to 1
+	_, err = client.Logical().WriteWithContext(t.Context(), "sys/quotas/rate-limit/rlq", map[string]any{
+		"rate": 1,
+	})
+	require.NoError(t, err)
+
+	// First requests should pass
+	_, err = client.Sys().ListNamespacesWithContext(t.Context())
+	require.NoError(t, err)
+
+	// Second request should fail
+	_, err = client.Sys().ListNamespacesWithContext(t.Context())
+	require.ErrorContains(t, err, "429") // HTTP 429 => "Too Many Requests"
+
+	// Count matching audit log entries
+	decoder := json.NewDecoder(auditLogFile)
+	var auditRecord map[string]any
+	var rateLimitAuditLogCount int
+	for decoder.Decode(&auditRecord) == nil {
+		if auditRecord["type"] == "request" {
+			if error, ok := auditRecord["error"]; ok && strings.HasSuffix(error.(string), quotas.ErrRateLimitQuotaExceeded.Error()) {
+				rateLimitAuditLogCount++
+			}
+		}
+	}
+
+	require.Equal(t, 1, rateLimitAuditLogCount, "expected exactly one rate limit exceeded audit log entry")
 }
 
 func TestQuotas_RateLimitQuota_Mount(t *testing.T) {
@@ -296,7 +364,7 @@ func TestQuotas_RateLimitQuota_Mount(t *testing.T) {
 	// Create a rate limit quota with a low RPS of 7.7, which means we can process
 	// ⌈7.7⌉*2 requests in the span of roughly a second -- 8 initially, followed
 	// by a refill rate of 7.7 per-second.
-	_, err := client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]interface{}{
+	_, err := client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]any{
 		"rate": 7.7,
 		"path": "pki/",
 	})
@@ -320,7 +388,7 @@ func TestQuotas_RateLimitQuota_Mount(t *testing.T) {
 	}
 
 	// update the rate limit quota with a high RPS such that no requests should fail
-	_, err = client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]any{
 		"rate": 10000.0,
 		"path": "pki/",
 	})
@@ -352,7 +420,7 @@ func TestQuotas_RateLimitQuota_MountPrecedence(t *testing.T) {
 	setupMounts(t, client)
 
 	// create a root rate limit quota
-	_, err := client.Logical().Write("sys/quotas/rate-limit/root-rlq", map[string]interface{}{
+	_, err := client.Logical().Write("sys/quotas/rate-limit/root-rlq", map[string]any{
 		"name": "root-rlq",
 		"rate": 14.7,
 	})
@@ -361,7 +429,7 @@ func TestQuotas_RateLimitQuota_MountPrecedence(t *testing.T) {
 	}
 
 	// create a mount rate limit quota with a lower RPS than the root rate limit quota
-	_, err = client.Logical().Write("sys/quotas/rate-limit/mount-rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/mount-rlq", map[string]any{
 		"name": "mount-rlq",
 		"rate": 7.7,
 		"path": "pki/",
@@ -415,7 +483,7 @@ func TestQuotas_RateLimitQuota(t *testing.T) {
 	// Create a rate limit quota with a low RPS of 7.7, which means we can process
 	// ⌈7.7⌉*2 requests in the span of roughly a second -- 8 initially, followed
 	// by a refill rate of 7.7 per-second.
-	_, err := client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]interface{}{
+	_, err := client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]any{
 		"rate": 7.7,
 	})
 	if err != nil {
@@ -451,7 +519,7 @@ func TestQuotas_RateLimitQuota(t *testing.T) {
 	time.Sleep(time.Second)
 
 	// update the rate limit quota with a high RPS such that no requests should fail
-	_, err = client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]any{
 		"rate": 10000.0,
 	})
 	if err != nil {
@@ -480,7 +548,7 @@ func TestQuotas_RateLimitQuotaNS(t *testing.T) {
 	// ⌈7.7⌉*2 requests in the span of roughly a second -- 8 initially, followed
 	// by a refill rate of 7.7 per-second.
 	// As inheritable is set to true, the quota will be inherited by child namespaces
-	_, err := client.Logical().Write("sys/quotas/rate-limit/global-rlq", map[string]interface{}{
+	_, err := client.Logical().Write("sys/quotas/rate-limit/global-rlq", map[string]any{
 		"rate": 7.7,
 	})
 	if err != nil {
@@ -489,21 +557,21 @@ func TestQuotas_RateLimitQuotaNS(t *testing.T) {
 
 	// Create Parent Namespace ns1
 	// ns1 intentionaly does not have a quota, so it should be able to do more requests than root
-	_, err = client.Logical().Write("sys/namespaces/ns1", map[string]interface{}{})
+	_, err = client.Logical().Write("sys/namespaces/ns1", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Create Childnamespace, so we get a hierarchy of ns1/ns1.1
 	client.SetNamespace("ns1")
-	_, err = client.Logical().Write("sys/namespaces/ns1.1", map[string]interface{}{})
+	_, err = client.Logical().Write("sys/namespaces/ns1.1", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	client.ClearNamespace()
 
 	// Create a rate limit for namespace ns1/ns1.1 with a higher RPS than the global quota
-	_, err = client.Logical().Write("sys/quotas/rate-limit/ns1.1-rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/ns1.1-rlq", map[string]any{
 		"rate": 9.9,
 		"path": "ns1/ns1.1",
 	})
@@ -578,7 +646,7 @@ func TestQuotas_RateLimitQuotaInheritableNS(t *testing.T) {
 	vault.TestWaitActive(t, core)
 
 	// Create Parent Namespace
-	_, err := client.Logical().Write("sys/namespaces/ns1", map[string]interface{}{})
+	_, err := client.Logical().Write("sys/namespaces/ns1", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +655,7 @@ func TestQuotas_RateLimitQuotaInheritableNS(t *testing.T) {
 	// ⌈7.7⌉*2 requests in the span of roughly a second -- 8 initially, followed
 	// by a refill rate of 7.7 per-second.
 	// As inheritable is set to true, the quota will be inherited by child namespaces
-	_, err = client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]any{
 		"rate":        7.7,
 		"path":        "ns1",
 		"inheritable": true,
@@ -598,7 +666,7 @@ func TestQuotas_RateLimitQuotaInheritableNS(t *testing.T) {
 
 	// Create Childnamespace, so we get a hierarchy of ns1/ns1.1
 	client.SetNamespace("ns1")
-	_, err = client.Logical().Write("sys/namespaces/ns1.1", map[string]interface{}{})
+	_, err = client.Logical().Write("sys/namespaces/ns1.1", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +706,7 @@ func TestQuotas_RateLimitQuotaInheritableNS(t *testing.T) {
 
 	// update the rate limit quota to inheritable false
 	// as a result the quota should not anymore apply to ns1.1, but only ns1
-	_, err = client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]interface{}{
+	_, err = client.Logical().Write("sys/quotas/rate-limit/rlq", map[string]any{
 		"rate":        7.7,
 		"path":        "ns1",
 		"inheritable": false,

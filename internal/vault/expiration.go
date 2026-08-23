@@ -155,6 +155,10 @@ type ExpirationManager struct {
 
 	jobManager      *fairshare.JobManager
 	revokeRetryBase time.Duration
+
+	// Whether or not we're processing lease expirations and thus caching
+	// entries in memory.
+	useCache bool
 }
 
 type ExpireLeaseStrategy func(context.Context, *ExpirationManager, string, *namespace.Namespace)
@@ -348,6 +352,8 @@ func NewExpirationManager(c *Core, e ExpireLeaseStrategy, logger log.Logger, det
 		logLeaseExpirations: api.ReadBaoVariable("BAO_SKIP_LOGGING_LEASE_EXPIRATIONS") == "",
 
 		revokeRetryBase: c.expirationRevokeRetryBase,
+
+		useCache: shouldProcessExp,
 	}
 
 	managerLogger := logger.Named("job-manager")
@@ -504,68 +510,6 @@ func (m *ExpirationManager) inRestoreMode() bool {
 	return m.restoreMode.Load() > 0
 }
 
-// invalidate will be used in the future for implementing read replica nodes
-//
-//nolint:unused
-func (m *ExpirationManager) invalidate(key string) {
-	switch {
-	case strings.HasPrefix(key, leaseViewPrefix):
-		leaseID := strings.TrimPrefix(key, leaseViewPrefix)
-		ctx := m.quitContext
-		_, nsID := namespace.SplitIDFromString(leaseID)
-		leaseNS := namespace.RootNamespace
-		var err error
-		if nsID != "" {
-			leaseNS, err = m.core.NamespaceByID(ctx, nsID)
-			if err != nil {
-				m.logger.Error("failed to invalidate lease entry", "error", err)
-				return
-			}
-		}
-
-		le, err := m.loadEntryInternal(namespace.ContextWithNamespace(ctx, leaseNS), leaseID, false, false)
-		if err != nil {
-			m.logger.Error("failed to invalidate lease entry", "error", err)
-			return
-		}
-
-		m.pendingLock.Lock()
-		defer m.pendingLock.Unlock()
-		info, ok := m.pending.Load(leaseID)
-		switch {
-		case ok:
-			switch le {
-			case nil:
-				// Handle lease deletion
-				pending := info.(pendingInfo)
-				pending.timer.Stop()
-				m.pending.Delete(leaseID)
-				m.leaseCount--
-			default:
-				// Update the lease in memory
-				m.updatePendingInternal(le)
-			}
-		default:
-			if le == nil {
-				// There is no entry in the pending map and the invalidation
-				// resulted in a nil entry. Therefore we should clean up the
-				// other maps, and update metrics/quotas if appropriate.
-				m.nonexpiring.Delete(leaseID)
-
-				if _, ok := m.irrevocable.Load(leaseID); ok {
-					m.irrevocable.Delete(leaseID)
-					m.irrevocableLeaseCount--
-
-					m.leaseCount--
-				}
-				return
-			}
-			// Handle lease update (if irrevocable) or creation (if pending)
-			m.updatePendingInternal(le)
-		}
-	}
-}
-
 // Tidy cleans up the dangling storage entries for leases. It scans the storage
 // view to find all the available leases, checks if the token embedded in it is
 // either empty or invalid and in both the cases, it revokes them. It also uses
@@ -693,6 +637,10 @@ func (m *ExpirationManager) Tidy(ctx context.Context) error {
 //
 // This is used after starting the vault.
 func (m *ExpirationManager) Restore(errorFunc func()) error {
+	if !m.useCache {
+		return nil
+	}
+
 	return m.restore(m.collectLeases, nil /* global */, errorFunc)
 }
 
@@ -884,7 +832,7 @@ func (m *ExpirationManager) processRestore(ctx context.Context, leaseID string) 
 	}
 
 	// Load lease and restore expiration timer
-	if _, err := m.loadEntryInternal(ctx, leaseID, true, false); err != nil {
+	if _, err := m.loadEntryInternal(ctx, leaseID, m.inRestoreMode(), false); err != nil {
 		return err
 	}
 
@@ -920,7 +868,7 @@ func (m *ExpirationManager) Stop() error {
 	m.irrevocableLeaseCount = 0
 	m.pendingLock.Unlock()
 
-	go oldPending.Range(func(key, value interface{}) bool {
+	go oldPending.Range(func(key, value any) bool {
 		info := value.(pendingInfo)
 		// We need to stop the timers to prevent memory leaks.
 		info.timer.Stop()
@@ -1048,7 +996,7 @@ func (m *ExpirationManager) lazyRevokeInternal(ctx context.Context, leaseID stri
 
 // should be run on a schedule. something like once a day, maybe once a week
 func (m *ExpirationManager) attemptIrrevocableLeasesRevoke() {
-	m.irrevocable.Range(func(k, v interface{}) bool {
+	m.irrevocable.Range(func(k, v any) bool {
 		if m.quitContext.Err() != nil {
 			return false
 		}
@@ -1828,6 +1776,10 @@ func (m *ExpirationManager) FetchLeaseInfo(ctx context.Context, leaseID string) 
 // fetchCachedLease attempts to look up a lease ID by pending or irrevocable
 // leases to skip a storage read.
 func (m *ExpirationManager) fetchCachedLease(leaseID string) *leaseEntry {
+	if !m.useCache {
+		return nil
+	}
+
 	info, ok := m.pending.Load(leaseID)
 	if ok && info.(pendingInfo).cachedLeaseInfo != nil {
 		return m.leaseInfoForExport(info.(pendingInfo).cachedLeaseInfo)
@@ -1939,6 +1891,10 @@ func (m *ExpirationManager) deleteLockForLease(id string) {
 
 // updatePending is used to update a pending invocation for a lease
 func (m *ExpirationManager) updatePending(le *leaseEntry) {
+	if !m.useCache {
+		return
+	}
+
 	m.pendingLock.Lock()
 	defer m.pendingLock.Unlock()
 
@@ -2147,7 +2103,7 @@ func (m *ExpirationManager) loadEntryInternal(ctx context.Context, leaseID strin
 	}
 	le.namespace = ns
 
-	if restoreMode {
+	if restoreMode && m.useCache {
 		if checkRestored {
 			// If we have already loaded this lease, we don't need to update on
 			// load. In the case of renewal and revocation, updatePending will be
@@ -2537,7 +2493,7 @@ func (m *ExpirationManager) WalkTokens(walkFn ExpirationWalkFunction) error {
 		return ErrInRestoreMode
 	}
 
-	callback := func(key, value interface{}) bool {
+	callback := func(key, value any) bool {
 		p := value.(pendingInfo)
 		if p.cachedLeaseInfo == nil {
 			return true
@@ -2568,7 +2524,7 @@ func (m *ExpirationManager) walkLeases(walkFn leaseWalkFunction) error {
 		return ErrInRestoreMode
 	}
 
-	callback := func(key, value interface{}) bool {
+	callback := func(key, value any) bool {
 		p := value.(pendingInfo)
 		if p.cachedLeaseInfo == nil {
 			return true
@@ -2676,7 +2632,7 @@ func (m *ExpirationManager) getLeaseMountAccessor(ctx context.Context, leaseID s
 	return mountAccessor
 }
 
-func (m *ExpirationManager) getIrrevocableLeaseCounts(ctx context.Context, includeChildNamespaces bool) (map[string]interface{}, error) {
+func (m *ExpirationManager) getIrrevocableLeaseCounts(ctx context.Context, includeChildNamespaces bool) (map[string]any, error) {
 	requestNS, err := namespace.FromContext(ctx)
 	if err != nil {
 		m.logger.Error("could not get namespace from context", "error", err)
@@ -2685,7 +2641,7 @@ func (m *ExpirationManager) getIrrevocableLeaseCounts(ctx context.Context, inclu
 
 	numMatchingLeasesPerMount := make(map[string]int)
 	numMatchingLeases := 0
-	m.irrevocable.Range(func(k, v interface{}) bool {
+	m.irrevocable.Range(func(k, v any) bool {
 		leaseID := k.(string)
 		leaseNS, err := m.getNamespaceFromLeaseID(ctx, leaseID)
 		if err != nil {
@@ -2712,7 +2668,7 @@ func (m *ExpirationManager) getIrrevocableLeaseCounts(ctx context.Context, inclu
 		return true
 	})
 
-	resp := make(map[string]interface{})
+	resp := make(map[string]any)
 	resp["lease_count"] = numMatchingLeases
 	resp["counts"] = numMatchingLeasesPerMount
 
@@ -2729,7 +2685,7 @@ type leaseResponse struct {
 // returns a warning string, if applicable
 // limit specifies how many results to return, and must be >0
 // includeAll specifies if all results should be returned, regardless of limit
-func (m *ExpirationManager) listIrrevocableLeases(ctx context.Context, includeChildNamespaces, returnAll bool, limit int) (map[string]interface{}, string, error) {
+func (m *ExpirationManager) listIrrevocableLeases(ctx context.Context, includeChildNamespaces, returnAll bool, limit int) (map[string]any, string, error) {
 	requestNS, err := namespace.FromContext(ctx)
 	if err != nil {
 		m.logger.Error("could not get namespace from context", "error", err)
@@ -2740,7 +2696,7 @@ func (m *ExpirationManager) listIrrevocableLeases(ctx context.Context, includeCh
 	matchingLeases := make([]*leaseResponse, 0)
 	numMatchingLeases := 0
 	var warning string
-	m.irrevocable.Range(func(k, v interface{}) bool {
+	m.irrevocable.Range(func(k, v any) bool {
 		leaseID := k.(string)
 		leaseInfo := v.(*leaseEntry)
 
@@ -2786,7 +2742,7 @@ func (m *ExpirationManager) listIrrevocableLeases(ctx context.Context, includeCh
 		return matchingLeases[i].LeaseID < matchingLeases[j].LeaseID
 	})
 
-	resp := make(map[string]interface{})
+	resp := make(map[string]any)
 	resp["lease_count"] = numMatchingLeases
 	resp["leases"] = matchingLeases
 
@@ -2796,16 +2752,16 @@ func (m *ExpirationManager) listIrrevocableLeases(ctx context.Context, includeCh
 // leaseEntry is used to structure the values the expiration
 // manager stores. This is used to handle renew and revocation.
 type leaseEntry struct {
-	LeaseID         string                 `json:"lease_id"`
-	ClientToken     string                 `json:"client_token"`
-	ClientTokenType logical.TokenType      `json:"token_type"`
-	Path            string                 `json:"path"`
-	Data            map[string]interface{} `json:"data"`
-	Secret          *logical.Secret        `json:"secret"`
-	Auth            *logical.Auth          `json:"auth"`
-	IssueTime       time.Time              `json:"issue_time"`
-	ExpireTime      time.Time              `json:"expire_time"`
-	LastRenewalTime time.Time              `json:"last_renewal_time"`
+	LeaseID         string            `json:"lease_id"`
+	ClientToken     string            `json:"client_token"`
+	ClientTokenType logical.TokenType `json:"token_type"`
+	Path            string            `json:"path"`
+	Data            map[string]any    `json:"data"`
+	Secret          *logical.Secret   `json:"secret"`
+	Auth            *logical.Auth     `json:"auth"`
+	IssueTime       time.Time         `json:"issue_time"`
+	ExpireTime      time.Time         `json:"expire_time"`
+	LastRenewalTime time.Time         `json:"last_renewal_time"`
 
 	// LoginRole is used to indicate which login role (if applicable) this lease
 	// was created with. This is required to decrement lease count quotas

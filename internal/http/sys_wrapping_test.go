@@ -12,7 +12,10 @@ import (
 
 	"github.com/openbao/openbao/api/v2"
 	"github.com/openbao/openbao/sdk/v2/helper/jsonutil"
+	"github.com/openbao/openbao/sdk/v2/logical"
+	"github.com/openbao/openbao/v2/internal/builtin/credential/userpass"
 	"github.com/openbao/openbao/v2/internal/vault"
+	"github.com/stretchr/testify/require"
 )
 
 // Test wrapping functionality
@@ -33,7 +36,7 @@ func TestHTTP_Wrapping(t *testing.T) {
 	client.SetToken(cluster.RootToken)
 
 	// Write a value that we will use with wrapping for lookup
-	_, err := client.Logical().Write("secret/foo", map[string]interface{}{
+	_, err := client.Logical().Write("secret/foo", map[string]any{
 		"zip": "zap",
 	})
 	if err != nil {
@@ -56,14 +59,14 @@ func TestHTTP_Wrapping(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	// Not supplied
-	_, err = client.Logical().Write("sys/wrapping/lookup", map[string]interface{}{
+	_, err = client.Logical().Write("sys/wrapping/lookup", map[string]any{
 		"foo": "bar",
 	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	// Nonexistent token isn't a wrapping token
-	_, err = client.Logical().Write("sys/wrapping/lookup", map[string]interface{}{
+	_, err = client.Logical().Write("sys/wrapping/lookup", map[string]any{
 		"token": "bar",
 	})
 	if err == nil {
@@ -82,14 +85,14 @@ func TestHTTP_Wrapping(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	// Not supplied
-	_, err = client.Logical().Write("sys/wrapping/unwrap", map[string]interface{}{
+	_, err = client.Logical().Write("sys/wrapping/unwrap", map[string]any{
 		"foo": "bar",
 	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	// Nonexistent token isn't a wrapping token
-	_, err = client.Logical().Write("sys/wrapping/unwrap", map[string]interface{}{
+	_, err = client.Logical().Write("sys/wrapping/unwrap", map[string]any{
 		"token": "bar",
 	})
 	if err == nil {
@@ -112,7 +115,7 @@ func TestHTTP_Wrapping(t *testing.T) {
 
 	// Test this twice to ensure no ill effect to the wrapping token as a result of the lookup
 	for range 2 {
-		secret, err = client.Logical().Write("sys/wrapping/lookup", map[string]interface{}{
+		secret, err = client.Logical().Write("sys/wrapping/lookup", map[string]any{
 			"token": wrapInfo.Token,
 		})
 		if err != nil {
@@ -175,7 +178,7 @@ func TestHTTP_Wrapping(t *testing.T) {
 	wrapInfo = secret.WrapInfo
 
 	// Test as a separate token
-	secret, err = client.Logical().Write("sys/wrapping/unwrap", map[string]interface{}{
+	secret, err = client.Logical().Write("sys/wrapping/unwrap", map[string]any{
 		"token": wrapInfo.Token,
 	})
 	if err != nil {
@@ -183,7 +186,7 @@ func TestHTTP_Wrapping(t *testing.T) {
 	}
 	ret2 := secret
 	// Should be expired and fail
-	_, err = client.Logical().Write("sys/wrapping/unwrap", map[string]interface{}{
+	_, err = client.Logical().Write("sys/wrapping/unwrap", map[string]any{
 		"token": wrapInfo.Token,
 	})
 	if err == nil {
@@ -239,12 +242,12 @@ func TestHTTP_Wrapping(t *testing.T) {
 		t.Fatal("expected err")
 	}
 
-	if !reflect.DeepEqual(ret1.Data, map[string]interface{}{
+	if !reflect.DeepEqual(ret1.Data, map[string]any{
 		"zip": "zap",
 	}) {
 		t.Fatalf("ret1 data did not match expected: %#v", ret1.Data)
 	}
-	if !reflect.DeepEqual(ret2.Data, map[string]interface{}{
+	if !reflect.DeepEqual(ret2.Data, map[string]any{
 		"zip": "zap",
 	}) {
 		t.Fatalf("ret2 data did not match expected: %#v", ret2.Data)
@@ -254,12 +257,12 @@ func TestHTTP_Wrapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(ret3Secret.Data, map[string]interface{}{
+	if !reflect.DeepEqual(ret3Secret.Data, map[string]any{
 		"zip": "zap",
 	}) {
 		t.Fatalf("ret3 data did not match expected: %#v", ret3Secret.Data)
 	}
-	if !reflect.DeepEqual(ret4.Data, map[string]interface{}{
+	if !reflect.DeepEqual(ret4.Data, map[string]any{
 		"zip": "zap",
 	}) {
 		t.Fatalf("ret4 data did not match expected: %#v", ret4.Data)
@@ -270,7 +273,7 @@ func TestHTTP_Wrapping(t *testing.T) {
 	//
 
 	client.SetToken(cluster.RootToken)
-	data := map[string]interface{}{
+	data := map[string]any{
 		"zip":   "zap",
 		"three": json.Number("2"),
 	}
@@ -330,7 +333,7 @@ func TestHTTP_Wrapping(t *testing.T) {
 	}
 
 	// Test rewrapping
-	secret, err = client.Logical().Write("sys/wrapping/rewrap", map[string]interface{}{
+	secret, err = client.Logical().Write("sys/wrapping/rewrap", map[string]any{
 		"token": wrapInfo.Token,
 	})
 	if err != nil {
@@ -346,7 +349,7 @@ func TestHTTP_Wrapping(t *testing.T) {
 	}
 
 	// Should be expired and fail
-	_, err = client.Logical().Write("sys/wrapping/unwrap", map[string]interface{}{
+	_, err = client.Logical().Write("sys/wrapping/unwrap", map[string]any{
 		"token": wrapInfo.Token,
 	})
 	if err == nil {
@@ -365,7 +368,7 @@ func TestHTTP_Wrapping(t *testing.T) {
 		t.Fatal("expected err")
 	}
 
-	if !reflect.DeepEqual(secret.Data, map[string]interface{}{
+	if !reflect.DeepEqual(secret.Data, map[string]any{
 		"zip": "zap",
 	}) {
 		t.Fatalf("secret data did not match expected: %#v", secret.Data)
@@ -385,5 +388,206 @@ func TestHTTP_Wrapping(t *testing.T) {
 	var respError *api.ResponseError
 	if errors.As(err, &respError); respError.StatusCode != 403 {
 		t.Fatalf("expected 403 response, actual: %d", respError.StatusCode)
+	}
+}
+
+// Test wrapping functionality with Control Group
+func TestHTTP_ControlGroupWrapping(t *testing.T) {
+	secetPolicy := `
+path "secret/foo" {
+  capabilities = ["read", "update"]
+  control_group = {
+    ttl = "5m"
+    factor "security-approval" {
+      controlled_capabilities = ["update"]
+      identity = {
+	group_names = ["security-approvers"]
+	approvals   = 1
+      }
+    }
+  }
+}
+`
+
+	approverPolicy := `
+path "sys/control-group/authorize" { capabilities = ["update"] }
+path "sys/control-group/request"   { capabilities = ["update"] }
+`
+
+	coreConfig := &vault.CoreConfig{
+		CredentialBackends: map[string]logical.Factory{
+			"userpass": userpass.Factory,
+		},
+	}
+
+	cluster := vault.NewTestCluster(t, coreConfig, &vault.TestClusterOptions{
+		HandlerFunc: Handler,
+	})
+	cluster.Start()
+	defer cluster.Cleanup()
+
+	cores := cluster.Cores
+
+	// make it easy to get access to the active
+	core := cores[0].Core
+	vault.TestWaitActive(t, core)
+
+	client := cores[0].Client
+	client.SetToken(cluster.RootToken)
+
+	resp, err := client.Logical().Write("identity/entity", map[string]any{
+		"name": "alice",
+		"policies": []string{
+			"secretPolicy",
+		},
+		"metadata": map[string]string{
+			"key": "metadata",
+		},
+	})
+	require.NoError(t, err)
+	aliceID := resp.Data["id"].(string)
+
+	resp, err = client.Logical().Write("identity/entity", map[string]any{
+		"name":     "bob",
+		"policies": []string{},
+		"metadata": map[string]string{
+			"key": "metadata",
+		},
+	})
+	require.NoError(t, err)
+	bobID := resp.Data["id"].(string)
+
+	resp, err = client.Logical().Write("identity/group", map[string]any{
+		"policies": []string{
+			"approverPolicy",
+		},
+		"member_entity_ids": []string{
+			bobID,
+		},
+		"name": "security-approvers",
+	})
+	require.NoError(t, err)
+	if resp.Data["id"] == nil {
+		t.Fatal("new group should have id")
+	}
+
+	// Enable userpass auth
+	err = client.Sys().EnableAuthWithOptions("userpass", &api.EnableAuthOptions{
+		Type: "userpass",
+	})
+	require.NoError(t, err)
+	auths, err := client.Sys().ListAuth()
+	require.NoError(t, err)
+	userpassAccessor := auths["userpass/"].Accessor
+
+	// Create aliases
+	_, err = client.Logical().Write("identity/entity-alias", map[string]any{
+		"name":           "alice",
+		"mount_accessor": userpassAccessor,
+		"canonical_id":   aliceID,
+	})
+	require.NoError(t, err)
+
+	_, err = client.Logical().Write("identity/entity-alias", map[string]any{
+		"name":           "bob",
+		"mount_accessor": userpassAccessor,
+		"canonical_id":   bobID,
+	})
+	require.NoError(t, err)
+
+	// Add users to userpass backend
+	_, err = client.Logical().Write("auth/userpass/users/alice", map[string]any{
+		"password": "alicepw",
+	})
+	require.NoError(t, err)
+
+	_, err = client.Logical().Write("auth/userpass/users/bob", map[string]any{
+		"password": "bobpw",
+	})
+	require.NoError(t, err)
+
+	// Write policies
+	err = client.Sys().PutPolicy("secretPolicy", secetPolicy)
+	require.NoError(t, err)
+
+	err = client.Sys().PutPolicy("approverPolicy", approverPolicy)
+	require.NoError(t, err)
+
+	// Authenticate
+	authResponse, err := client.Logical().Write("auth/userpass/login/alice", map[string]any{
+		"password": "alicepw",
+	})
+	require.NoError(t, err)
+	aliceToken := authResponse.Auth.ClientToken
+
+	authResponse, err = client.Logical().Write("auth/userpass/login/bob", map[string]any{
+		"password": "bobpw",
+	})
+	require.NoError(t, err)
+	bobToken := authResponse.Auth.ClientToken
+
+	// Create a secret protected by control group policy by path
+	_, err = client.Logical().Write("secret/foo", map[string]any{
+		"foo": "bar",
+	})
+	require.NoError(t, err)
+
+	//
+	// Test lookup
+	//
+
+	// Get the wrapped response with wrapping token and accessor
+	client.SetToken(aliceToken)
+	secretResponse, err := client.Logical().Write("secret/foo", map[string]any{
+		"foo": "baz",
+	})
+	require.NoError(t, err)
+	if secretResponse == nil || secretResponse.WrapInfo == nil {
+		t.Fatal("wrap info is nil")
+	}
+	wrapInfo := secretResponse.WrapInfo
+
+	// Attempt unwrap via the client token (should be error now)
+	client.SetToken(wrapInfo.Token)
+	_, err = client.Logical().Write("sys/wrapping/unwrap", nil)
+	require.Error(t, err)
+
+	// Validate the update is deferred
+	client.SetToken(aliceToken)
+	secretResponse, err = client.Logical().Read("secret/foo")
+	require.NoError(t, err)
+	if secretResponse.Data["foo"] != "bar" {
+		t.Fatal("secret updated but should not have")
+	}
+
+	// Authorize it
+	client.SetToken(bobToken)
+	approverResponse, err := client.Logical().Write("sys/control-group/request", map[string]any{
+		"accessor": wrapInfo.Accessor,
+	})
+	require.NoError(t, err)
+	if approverResponse.Data["approved"] == nil {
+		t.Fatal("unexpected request data")
+	}
+
+	approverResponse, err = client.Logical().Write("sys/control-group/authorize", map[string]any{
+		"accessor": wrapInfo.Accessor,
+	})
+	require.NoError(t, err)
+	if approverResponse.Data["approved"] == nil {
+		t.Fatal("unexpected request data")
+	}
+
+	// Unwrap via the wrapping token (should execute the secret update)
+	client.SetToken(wrapInfo.Token)
+	_, err = client.Logical().Write("sys/wrapping/unwrap", nil)
+	require.NoError(t, err)
+
+	// Validate the update has executed
+	client.SetToken(aliceToken)
+	secretResponse, err = client.Logical().Read("secret/foo")
+	require.NoError(t, err)
+	if secretResponse.Data["foo"] != "baz" {
+		t.Fatal("secret did not update")
 	}
 }

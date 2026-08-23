@@ -883,8 +883,8 @@ func (c *ConsulBackend) List(ctx context.Context, prefix string) ([]string, erro
 			}
 			openBaoKey := c.openBaoKey(consulKey)
 			// Remove the prefix to get relative key
-			if strings.HasPrefix(openBaoKey, prefix) {
-				relativeKey := strings.TrimPrefix(openBaoKey, prefix)
+			if after, ok := strings.CutPrefix(openBaoKey, prefix); ok {
+				relativeKey := after
 				if relativeKey != "" {
 					result = append(result, relativeKey)
 				}
@@ -1084,15 +1084,19 @@ func (l *ConsulLock) Lock(stopCh <-chan struct{}) (<-chan struct{}, error) {
 
 	acquired, _, err := l.backend.kv.Acquire(pair, nil)
 	if err != nil {
-		// Clean up session on failure
-		l.backend.client.Session().Destroy(sessionID, nil)
+		// Clean up session on failure; the session TTL reaps it if this fails
+		if _, destroyErr := l.backend.client.Session().Destroy(sessionID, nil); destroyErr != nil {
+			l.logger.Warn("failed to destroy consul session after lock acquire error", "session", sessionID, "error", destroyErr)
+		}
 		l.session = ""
 		return nil, fmt.Errorf("failed to acquire consul lock: %w", err)
 	}
 
 	if !acquired {
-		// Clean up session on failure
-		l.backend.client.Session().Destroy(sessionID, nil)
+		// Clean up session on failure; the session TTL reaps it if this fails
+		if _, destroyErr := l.backend.client.Session().Destroy(sessionID, nil); destroyErr != nil {
+			l.logger.Warn("failed to destroy consul session after failed lock acquire", "session", sessionID, "error", destroyErr)
+		}
 		l.session = ""
 		return nil, fmt.Errorf("failed to acquire lock: already held")
 	}

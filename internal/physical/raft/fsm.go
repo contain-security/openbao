@@ -757,11 +757,11 @@ func (f *FSM) applyBatchTxOps(tx *bolt.Tx, b *bolt.Bucket, txnState *fsmTxnCommi
 
 // ApplyBatch will apply a set of logs to the FSM. This is called from the raft
 // library.
-func (f *FSM) ApplyBatch(logs []*raft.Log) []interface{} {
+func (f *FSM) ApplyBatch(logs []*raft.Log) []any {
 	numLogs := len(logs)
 
 	if numLogs == 0 {
-		return []interface{}{}
+		return []any{}
 	}
 
 	// We will construct one slice per log, each slice containing another slice of results from our get ops
@@ -769,7 +769,7 @@ func (f *FSM) ApplyBatch(logs []*raft.Log) []interface{} {
 
 	// Do the unmarshalling first so we don't hold locks
 	var latestConfiguration *ConfigurationValue
-	commands := make([]interface{}, 0, numLogs)
+	commands := make([]any, 0, numLogs)
 	for _, l := range logs {
 		switch l.Type {
 		case raft.LogCommand:
@@ -894,23 +894,18 @@ func (f *FSM) ApplyBatch(logs []*raft.Log) []interface{} {
 			}
 		}
 
-		return err
-	})
-
-	// If we had no error, update our last applied log.
-	if err == nil {
-		err = f.db.Update(func(tx *bolt.Tx) error {
+		// If we had no error, update our last applied log.
+		if err == nil {
 			if len(logIndex) > 0 {
-				b := tx.Bucket(configBucketName)
-				err = b.Put(latestIndexKey, logIndex)
+				err = configB.Put(latestIndexKey, logIndex)
 				if err != nil {
 					return err
 				}
 			}
+		}
 
-			return nil
-		})
-	}
+		return err
+	})
 
 	if err != nil {
 		f.logger.Error("failed to store data", "error", err)
@@ -952,7 +947,7 @@ func (f *FSM) ApplyBatch(logs []*raft.Log) []interface{} {
 	// Build the responses. The logs array is used here to ensure we reply to
 	// all command values; even if they are not of the types we expect. This
 	// should futureproof this function from more log types being provided.
-	resp := make([]interface{}, numLogs)
+	resp := make([]any, numLogs)
 	for i := range logs {
 		resp[i] = &FSMApplyResponse{
 			Success:    true,
@@ -965,7 +960,7 @@ func (f *FSM) ApplyBatch(logs []*raft.Log) []interface{} {
 
 // Apply will apply a log value to the FSM. This is called from the raft
 // library.
-func (f *FSM) Apply(log *raft.Log) interface{} {
+func (f *FSM) Apply(log *raft.Log) any {
 	return f.ApplyBatch([]*raft.Log{log})[0]
 }
 

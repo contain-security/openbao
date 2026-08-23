@@ -458,7 +458,7 @@ func TestCore_UseSSCTokenToggleOn(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -513,7 +513,7 @@ func TestCore_UseNonSSCTokenToggleOff(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -983,7 +983,7 @@ func TestCore_HandleRequest_Lease(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -1029,7 +1029,7 @@ func TestCore_HandleRequest_Lease_MaxLength(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1000h",
 		},
@@ -1075,7 +1075,7 @@ func TestCore_HandleRequest_Lease_DefaultLength(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "0h",
 		},
@@ -1121,7 +1121,7 @@ func TestCore_HandleRequest_MissingToken(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -1141,7 +1141,7 @@ func TestCore_HandleRequest_InvalidToken(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -1198,7 +1198,7 @@ func TestCore_HandleRequest_RootPath_WithSudo(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sys/policy/test", // root protected!
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"rules": `path "sys/policy" { policy = "sudo" }`,
 		},
 		ClientToken: root,
@@ -1235,7 +1235,7 @@ func TestCore_HandleRequest_PermissionDenied(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -1256,7 +1256,7 @@ func TestCore_HandleRequest_PermissionAllowed(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "sys/policy/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"rules": `path "secret/*" { policy = "write" }`,
 		},
 		ClientToken: root,
@@ -1273,7 +1273,7 @@ func TestCore_HandleRequest_PermissionAllowed(t *testing.T) {
 	req = &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -1309,7 +1309,8 @@ func TestCore_HandleRequest_NoClientToken(t *testing.T) {
 
 	// Attempt to request with connection data
 	req = &logical.Request{
-		Path: "foo/login",
+		Path:      "foo/login",
+		Operation: logical.UpdateOperation,
 	}
 	req.ClientToken = root
 	if _, err := c.HandleRequest(namespace.RootContext(t.Context()), req); err != nil {
@@ -1345,6 +1346,7 @@ func TestCore_HandleRequest_ConnOnLogin(t *testing.T) {
 	// Attempt to request with connection data
 	req = &logical.Request{
 		Path:       "auth/foo/login",
+		Operation:  logical.UpdateOperation,
 		Connection: &logical.Connection{},
 	}
 	if _, err := c.HandleRequest(namespace.RootContext(t.Context()), req); err != nil {
@@ -1386,7 +1388,8 @@ func TestCore_HandleLogin_Token(t *testing.T) {
 
 	// Attempt to login
 	lreq := &logical.Request{
-		Path: "auth/foo/login",
+		Path:      "auth/foo/login",
+		Operation: logical.UpdateOperation,
 	}
 	lresp, err := c.HandleRequest(namespace.RootContext(t.Context()), lreq)
 	if err != nil {
@@ -1460,7 +1463,7 @@ func TestCore_HandleRequest_AuditTrail(t *testing.T) {
 	req = &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -1549,7 +1552,7 @@ func TestCore_HandleRequest_AuditTrail_noHMACKeys(t *testing.T) {
 	req = &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo": "bar",
 		},
 		ClientToken: root,
@@ -1665,7 +1668,8 @@ func TestCore_HandleLogin_AuditTrail(t *testing.T) {
 
 	// Attempt to login
 	lreq := &logical.Request{
-		Path: "auth/foo/login",
+		Path:      "auth/foo/login",
+		Operation: logical.UpdateOperation,
 	}
 	lresp, err := c.HandleRequest(namespace.RootContext(t.Context()), lreq)
 	if err != nil {
@@ -1821,7 +1825,7 @@ func TestCore_LimitedUseToken(t *testing.T) {
 	req = &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/foo",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo": "bar",
 		},
 		ClientToken: resp.Auth.ClientToken,
@@ -2411,7 +2415,7 @@ func testCore_Standby_Common(t *testing.T, inm physical.Backend, inmha physical.
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/foo",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo": "bar",
 		},
 		ClientToken: root,
@@ -2558,7 +2562,7 @@ func TestCore_HandleRequest_Login_InternalData(t *testing.T) {
 		Response: &logical.Response{
 			Auth: &logical.Auth{
 				Policies: []string{"foo", "bar"},
-				InternalData: map[string]interface{}{
+				InternalData: map[string]any{
 					"foo": "bar",
 				},
 			},
@@ -2582,7 +2586,8 @@ func TestCore_HandleRequest_Login_InternalData(t *testing.T) {
 
 	// Attempt to login
 	lreq := &logical.Request{
-		Path: "auth/foo/login",
+		Path:      "auth/foo/login",
+		Operation: logical.UpdateOperation,
 	}
 	lresp, err := c.HandleRequest(namespace.RootContext(t.Context()), lreq)
 	if err != nil {
@@ -2600,11 +2605,11 @@ func TestCore_HandleRequest_InternalData(t *testing.T) {
 	noop := &be.Noop{
 		Response: &logical.Response{
 			Secret: &logical.Secret{
-				InternalData: map[string]interface{}{
+				InternalData: map[string]any{
 					"foo": "bar",
 				},
 			},
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"foo": "bar",
 			},
 		},
@@ -2671,7 +2676,8 @@ func TestCore_HandleLogin_ReturnSecret(t *testing.T) {
 
 	// Attempt to login
 	lreq := &logical.Request{
-		Path: "auth/foo/login",
+		Path:      "auth/foo/login",
+		Operation: logical.UpdateOperation,
 	}
 	_, err = c.HandleRequest(namespace.RootContext(t.Context()), lreq)
 	if err != ErrInternalError {
@@ -2687,7 +2693,7 @@ func TestCore_RenewSameLease(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -2739,7 +2745,7 @@ func TestCore_RenewToken_SingleRegister(t *testing.T) {
 	req := &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "auth/token/create",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"lease": "1h",
 		},
 		ClientToken: root,
@@ -2753,7 +2759,7 @@ func TestCore_RenewToken_SingleRegister(t *testing.T) {
 	// Renew the token
 	req = logical.TestRequest(t, logical.UpdateOperation, "auth/token/renew")
 	req.ClientToken = newClient
-	req.Data = map[string]interface{}{
+	req.Data = map[string]any{
 		"token": newClient,
 	}
 	_, err = c.HandleRequest(namespace.RootContext(t.Context()), req)
@@ -2771,7 +2777,7 @@ func TestCore_RenewToken_SingleRegister(t *testing.T) {
 
 	// Verify our token is still valid (e.g. we did not get invalidated by the revoke)
 	req = logical.TestRequest(t, logical.UpdateOperation, "auth/token/lookup")
-	req.Data = map[string]interface{}{
+	req.Data = map[string]any{
 		"token": newClient,
 	}
 	req.ClientToken = newClient
@@ -2828,7 +2834,8 @@ path "secret/*" {
 
 	// Attempt to login -- should fail because we don't allow root to be returned
 	lreq := &logical.Request{
-		Path: "auth/foo/login",
+		Path:      "auth/foo/login",
+		Operation: logical.UpdateOperation,
 	}
 	lresp, err := c.HandleRequest(namespace.RootContext(t.Context()), lreq)
 	if err == nil || lresp == nil || !lresp.IsError() {
@@ -2838,7 +2845,8 @@ path "secret/*" {
 	// Fix and try again
 	noopBack.Response.Auth.Policies = []string{"admins"}
 	lreq = &logical.Request{
-		Path: "auth/foo/login",
+		Path:      "auth/foo/login",
+		Operation: logical.UpdateOperation,
 	}
 	lresp, err = c.HandleRequest(namespace.RootContext(t.Context()), lreq)
 	if err != nil {
@@ -2849,7 +2857,7 @@ path "secret/*" {
 	req = &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "secret/test",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo":   "bar",
 			"lease": "1h",
 		},
@@ -2880,7 +2888,7 @@ path "secret/*" {
 
 	// Renew the lease
 	req = logical.TestRequest(t, logical.UpdateOperation, "sys/leases/renew")
-	req.Data = map[string]interface{}{
+	req.Data = map[string]any{
 		"lease_id": resp.Secret.LeaseID,
 	}
 	req.ClientToken = lresp.Auth.ClientToken
@@ -3030,7 +3038,7 @@ func TestCore_Standby_Rotate(t *testing.T) {
 func TestCore_HandleRequest_Headers(t *testing.T) {
 	noop := &be.Noop{
 		Response: &logical.Response{
-			Data: map[string]interface{}{},
+			Data: map[string]any{},
 		},
 	}
 
@@ -3108,7 +3116,7 @@ func TestCore_HandleRequest_Headers(t *testing.T) {
 func TestCore_HandleRequest_Headers_denyList(t *testing.T) {
 	noop := &be.Noop{
 		Response: &logical.Response{
-			Data: map[string]interface{}{},
+			Data: map[string]any{},
 		},
 	}
 
@@ -3163,7 +3171,7 @@ func TestCore_HandleRequest_TokenCreate_RegisterAuthFailure(t *testing.T) {
 
 	// Create a root token and use that for subsequent requests
 	req := logical.TestRequest(t, logical.CreateOperation, "auth/token/create")
-	req.Data = map[string]interface{}{
+	req.Data = map[string]any{
 		"policies": []string{"root"},
 	}
 	req.ClientToken = root
@@ -3199,7 +3207,7 @@ func TestCore_HandleRequest_TokenCreate_RegisterAuthFailure(t *testing.T) {
 	// Do a lookup against the client token that we used for the failed request.
 	// It should still be present
 	req = logical.TestRequest(t, logical.UpdateOperation, "auth/token/lookup")
-	req.Data = map[string]interface{}{
+	req.Data = map[string]any{
 		"token": tokenWithRootPolicy,
 	}
 	req.ClientToken = root

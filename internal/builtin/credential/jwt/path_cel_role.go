@@ -220,34 +220,14 @@ func (b *jwtAuthBackend) pathCelRoleCreate(ctx context.Context, req *logical.Req
 		return logical.ErrorResponse(err.Error()), nil
 	}
 
-	expirationLeeway := time.Duration(claimDefaultLeeway) * time.Second
-	if tokenExpLeewayRaw, ok := data.GetOk("expiration_leeway"); ok {
-		expirationLeeway = time.Duration(tokenExpLeewayRaw.(int)) * time.Second
-	}
-
-	notBeforeLeeway := time.Duration(claimDefaultLeeway) * time.Second
-	if tokenNotBeforeLeewayRaw, ok := data.GetOk("not_before_leeway"); ok {
-		notBeforeLeeway = time.Duration(tokenNotBeforeLeewayRaw.(int)) * time.Second
-	}
-
-	clockSkewLeeway := jwt.DefaultLeeway
-	if tokenClockSkewLeeway, ok := data.GetOk("clock_skew_leeway"); ok {
-		clockSkewLeeway = time.Duration(tokenClockSkewLeeway.(int)) * time.Second
-	}
-
-	boundAudiences := []string{}
-	if tokenBoundAudiences, ok := data.GetOk("bound_audiences"); ok {
-		boundAudiences = tokenBoundAudiences.([]string)
-	}
-
 	entry := &celRoleEntry{
 		Name:             name,
 		Program:          celProgram,
 		Message:          data.Get("message").(string),
-		BoundAudiences:   boundAudiences,
-		ExpirationLeeway: expirationLeeway,
-		NotBeforeLeeway:  notBeforeLeeway,
-		ClockSkewLeeway:  clockSkewLeeway,
+		BoundAudiences:   data.Get("bound_audiences").([]string),
+		ExpirationLeeway: time.Duration(data.Get("expiration_leeway").(int)) * time.Second,
+		NotBeforeLeeway:  time.Duration(data.Get("not_before_leeway").(int)) * time.Second,
+		ClockSkewLeeway:  time.Duration(data.Get("clock_skew_leeway").(int)) * time.Second,
 	}
 
 	if err := entry.Program.Validate(b.celEvalConfig()); err != nil {
@@ -315,14 +295,18 @@ func (b *jwtAuthBackend) pathCelRolePatch(ctx context.Context, req *logical.Requ
 	}
 
 	entry := &celRoleEntry{
-		Name:    roleName,
-		Program: oldEntry.Program,
-		Message: data.GetWithExplicitDefault("message", oldEntry.Message).(string),
+		Name:             roleName,
+		Program:          oldEntry.Program,
+		Message:          data.GetWithExplicitDefault("message", oldEntry.Message).(string),
+		NotBeforeLeeway:  data.GetTimeWithExplicitDefault("not_before_leeway", oldEntry.NotBeforeLeeway),
+		ClockSkewLeeway:  data.GetTimeWithExplicitDefault("clock_skew_leeway", oldEntry.ClockSkewLeeway),
+		ExpirationLeeway: data.GetTimeWithExplicitDefault("expiration_leeway", oldEntry.ExpirationLeeway),
+		BoundAudiences:   data.GetWithExplicitDefault("bound_audiences", oldEntry.BoundAudiences).([]string),
 	}
 
 	// Update the program field if provided.
 	if programRaw, ok := data.GetOk("cel_program"); ok {
-		programMap, ok := programRaw.(map[string]interface{})
+		programMap, ok := programRaw.(map[string]any)
 		if !ok {
 			return logical.ErrorResponse("'cel_program' must be a valid map"), nil
 		}
@@ -397,8 +381,8 @@ const (
 	pathCelRoleHelpDesc = `This path lets you manage the CEL roles that can be created with this backend.`
 )
 
-func (r *celRoleEntry) ToResponseData() map[string]interface{} {
-	return map[string]interface{}{
+func (r *celRoleEntry) ToResponseData() map[string]any {
+	return map[string]any{
 		"name":              r.Name,
 		"cel_program":       r.Program,
 		"message":           r.Message,

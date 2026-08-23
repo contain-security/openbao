@@ -126,6 +126,11 @@ func TestExternalPlugin_RollbackAndReload(t *testing.T) {
 
 func testRegisterAndEnable(t *testing.T, client *api.Client, plugin pluginhelpers.TestPlugin) {
 	t.Helper()
+	testRegisterPlugin(t, client, plugin)
+	testEnablePlugin(t, client, plugin)
+}
+
+func testRegisterPlugin(t *testing.T, client *api.Client, plugin pluginhelpers.TestPlugin) {
 	if err := client.Sys().RegisterPlugin(&api.RegisterPluginInput{
 		Name:    plugin.Name,
 		Type:    api.PluginType(plugin.Typ),
@@ -135,7 +140,9 @@ func testRegisterAndEnable(t *testing.T, client *api.Client, plugin pluginhelper
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
 
+func testEnablePlugin(t *testing.T, client *api.Client, plugin pluginhelpers.TestPlugin) {
 	switch plugin.Typ {
 	case consts.PluginTypeSecrets:
 		if err := client.Sys().Mount(plugin.Name, &api.MountInput{
@@ -209,7 +216,7 @@ func testExternalPlugin_ContinueOnError(t *testing.T, mismatch bool, pluginType 
 	// Trigger a sha256 mismatch or missing plugin error
 	if mismatch {
 		req = logical.TestRequest(t, logical.UpdateOperation, pluginPath)
-		req.Data = map[string]interface{}{
+		req.Data = map[string]any{
 			"sha256":  "d17bd7334758e53e6fbab15745d2520765c06e296f2ce8e25b7919effa0ac216",
 			"command": filepath.Base(command),
 		}
@@ -225,36 +232,25 @@ func testExternalPlugin_ContinueOnError(t *testing.T, mismatch bool, pluginType 
 		}
 	}
 
-	// Seal the cluster
+	// Seal and unseal the cluster
 	cluster.EnsureCoresSealed(t)
+	cluster.UnsealCores(t)
 
-	// Unseal the cluster
-	barrierKeys := cluster.BarrierKeys
-	for _, core := range cluster.Cores {
-		for _, key := range barrierKeys {
-			_, err := core.Unseal(vault.TestKeyCopy(key))
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-		if core.Sealed() {
-			t.Fatal("should not be sealed")
-		}
-	}
-
-	// Wait for active so post-unseal takes place
-	// If it fails, it means unseal process failed
-	vault.TestWaitActive(t, core.Core)
-
-	// unmount
+	// unmount -- this invokes the plugin, though we don't really care if it
+	// passes or fails. It will fail if the plugin has written any data but
+	// succeed vacuously if the plugin has not done anything during
+	// initialization.
+	unmountFailed := false
 	switch pluginType {
 	case consts.PluginTypeSecrets:
 		if err := client.Sys().Unmount(plugin.Name); err != nil {
-			t.Fatal(err)
+			t.Logf("got (non-fatal) error unmounting: %v", err)
+			unmountFailed = true
 		}
 	case consts.PluginTypeCredential:
 		if err := client.Sys().DisableAuth(plugin.Name); err != nil {
-			t.Fatal(err)
+			t.Logf("got (non-fatal) error unmounting: %v", err)
+			unmountFailed = true
 		}
 	}
 
@@ -264,11 +260,31 @@ func testExternalPlugin_ContinueOnError(t *testing.T, mismatch bool, pluginType 
 	cluster.Plugins = plugins
 
 	// Re-add the plugin to the catalog
-	testRegisterAndEnable(t, client, plugin)
+	testRegisterPlugin(t, client, plugin)
+
+	// Clean up our old one should now succeed after a restart.
+	if unmountFailed {
+		// Seal and unseal the cluster
+		cluster.EnsureCoresSealed(t)
+		cluster.UnsealCores(t)
+
+		switch pluginType {
+		case consts.PluginTypeSecrets:
+			if err := client.Sys().Unmount(plugin.Name); err != nil {
+				t.Fatalf("failed to unmount after re-loading plugin: %v", err)
+			}
+		case consts.PluginTypeCredential:
+			if err := client.Sys().DisableAuth(plugin.Name); err != nil {
+				t.Fatalf("failed to unmount after re-loading plugin: %v", err)
+			}
+		}
+	}
+
+	testEnablePlugin(t, client, plugin)
 
 	// Reload the plugin
 	req = logical.TestRequest(t, logical.UpdateOperation, "sys/plugins/reload/backend")
-	req.Data = map[string]interface{}{
+	req.Data = map[string]any{
 		"plugin": plugin.Name,
 	}
 	req.ClientToken = core.Client.Token()
@@ -332,7 +348,7 @@ func TestExternalPlugin_AuthMethod(t *testing.T) {
 				// secondary has not yet invalidated the mount from the call
 				// above.
 				require.EventuallyWithT(t, func(collect *assert.CollectT) {
-					_, err := client.Logical().Write("auth/"+pluginPath+"/role/role1", map[string]interface{}{
+					_, err := client.Logical().Write("auth/"+pluginPath+"/role/role1", map[string]any{
 						"bind_secret_id": "true",
 						"period":         "300",
 					})
@@ -425,7 +441,7 @@ func TestExternalPlugin_AuthMethodReload(t *testing.T) {
 	testRegisterAndEnable(t, client, plugin)
 
 	// Configure
-	_, err := client.Logical().Write("auth/"+plugin.Name+"/role/role1", map[string]interface{}{
+	_, err := client.Logical().Write("auth/"+plugin.Name+"/role/role1", map[string]any{
 		"bind_secret_id": "true",
 		"period":         "300",
 	})
@@ -526,7 +542,7 @@ func TestExternalPlugin_SecretsEngine(t *testing.T) {
 				}
 
 				// Configure
-				_, err := client.Logical().Write(pluginPath+"/data/creds", map[string]interface{}{
+				_, err := client.Logical().Write(pluginPath+"/data/creds", map[string]any{
 					"address": "localhost:8300",
 					"token":   "devcreds",
 				})
@@ -567,7 +583,7 @@ func TestExternalPlugin_SecretsEngineReload(t *testing.T) {
 
 	testRegisterAndEnable(t, client, plugin)
 
-	_, err := client.Logical().Write(plugin.Name+"/data/creds", map[string]interface{}{
+	_, err := client.Logical().Write(plugin.Name+"/data/creds", map[string]any{
 		"address": "localhost:8300",
 		"token":   "testtoken",
 	})
@@ -651,7 +667,7 @@ func TestExternalPlugin_Database(t *testing.T) {
 				cleanupContainer, connURL := postgreshelper.PrepareTestContainerWithVaultUser(t, t.Context(), "13.4-buster")
 				defer cleanupContainer()
 
-				_, err := client.Logical().Write("database/config/"+dbName, map[string]interface{}{
+				_, err := client.Logical().Write("database/config/"+dbName, map[string]any{
 					"connection_url": connURL,
 					"plugin_name":    plugin.Name,
 					"allowed_roles":  []string{roleName},
@@ -662,12 +678,12 @@ func TestExternalPlugin_Database(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				_, err = client.Logical().Write("database/rotate-root/"+dbName, map[string]interface{}{})
+				_, err = client.Logical().Write("database/rotate-root/"+dbName, map[string]any{})
 				if err != nil {
 					t.Fatal(err)
 				}
 
-				_, err = client.Logical().Write("database/roles/"+roleName, map[string]interface{}{
+				_, err = client.Logical().Write("database/roles/"+roleName, map[string]any{
 					"db_name":             dbName,
 					"creation_statements": testRole,
 					"max_ttl":             "10m",
@@ -685,7 +701,7 @@ func TestExternalPlugin_Database(t *testing.T) {
 					t.Fatal("read creds response is nil")
 				}
 
-				_, err = client.Logical().Write("database/reset/"+dbName, map[string]interface{}{})
+				_, err = client.Logical().Write("database/reset/"+dbName, map[string]any{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -781,7 +797,7 @@ func TestExternalPlugin_DatabaseReload(t *testing.T) {
 	cleanupContainer, connURL := postgreshelper.PrepareTestContainerWithVaultUser(t, t.Context(), "13.4-buster")
 	defer cleanupContainer()
 
-	_, err := client.Logical().Write("database/config/"+dbName, map[string]interface{}{
+	_, err := client.Logical().Write("database/config/"+dbName, map[string]any{
 		"connection_url": connURL,
 		"plugin_name":    plugin.Name,
 		"allowed_roles":  []string{roleName},
@@ -792,7 +808,7 @@ func TestExternalPlugin_DatabaseReload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Logical().Write("database/roles/"+roleName, map[string]interface{}{
+	_, err = client.Logical().Write("database/roles/"+roleName, map[string]any{
 		"db_name":             dbName,
 		"creation_statements": testRole,
 		"max_ttl":             "10m",
@@ -843,7 +859,7 @@ CREATE ROLE "{{name}}" WITH
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "{{name}}";
 `
 
-func testExternalPluginMetadataAuditLog(t *testing.T, log map[string]interface{}, expectedMountClass string) {
+func testExternalPluginMetadataAuditLog(t *testing.T, log map[string]any, expectedMountClass string) {
 	if mountClass, ok := log["mount_class"].(string); !ok {
 		t.Fatalf("mount_class should be a string, not %T", log["mount_class"])
 	} else if mountClass != expectedMountClass {
@@ -890,7 +906,7 @@ func TestExternalPlugin_AuditEnabled_ShouldLogPluginMetadata_Auth(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	_, err = client.Logical().Write("auth/"+plugin.Name+"/role/role1", map[string]interface{}{
+	_, err = client.Logical().Write("auth/"+plugin.Name+"/role/role1", map[string]any{
 		"bind_secret_id": "true",
 		"period":         "300",
 	})
@@ -900,20 +916,20 @@ func TestExternalPlugin_AuditEnabled_ShouldLogPluginMetadata_Auth(t *testing.T) 
 
 	// Check the audit trail on request and response
 	decoder := json.NewDecoder(auditLogFile)
-	var auditRecord map[string]interface{}
+	var auditRecord map[string]any
 	for decoder.Decode(&auditRecord) == nil {
-		auditRequest := map[string]interface{}{}
+		auditRequest := map[string]any{}
 		if req, ok := auditRecord["request"]; ok {
-			auditRequest = req.(map[string]interface{})
+			auditRequest = req.(map[string]any)
 			if auditRequest["path"] != "auth/"+plugin.Name+"/role/role1" {
 				continue
 			}
 		}
 		testExternalPluginMetadataAuditLog(t, auditRequest, consts.PluginTypeCredential.String())
 
-		auditResponse := map[string]interface{}{}
+		auditResponse := map[string]any{}
 		if req, ok := auditRecord["response"]; ok {
-			auditResponse = req.(map[string]interface{})
+			auditResponse = req.(map[string]any)
 			if auditResponse["path"] != "auth/"+plugin.Name+"/role/role1" {
 				continue
 			}
@@ -961,7 +977,7 @@ func TestExternalPlugin_AuditEnabled_ShouldLogPluginMetadata_Secret(t *testing.T
 	}
 
 	// Configure
-	_, err = client.Logical().Write(plugin.Name+"/data/creds", map[string]interface{}{
+	_, err = client.Logical().Write(plugin.Name+"/data/creds", map[string]any{
 		"address": "localhost:8300",
 		"token":   "devcreds",
 	})
@@ -971,20 +987,20 @@ func TestExternalPlugin_AuditEnabled_ShouldLogPluginMetadata_Secret(t *testing.T
 
 	// Check the audit trail on request and response
 	decoder := json.NewDecoder(auditLogFile)
-	var auditRecord map[string]interface{}
+	var auditRecord map[string]any
 	for decoder.Decode(&auditRecord) == nil {
-		auditRequest := map[string]interface{}{}
+		auditRequest := map[string]any{}
 		if req, ok := auditRecord["request"]; ok {
-			auditRequest = req.(map[string]interface{})
+			auditRequest = req.(map[string]any)
 			if auditRequest["path"] != plugin.Name+"/data/creds" {
 				continue
 			}
 		}
 		testExternalPluginMetadataAuditLog(t, auditRequest, consts.PluginTypeSecrets.String())
 
-		auditResponse := map[string]interface{}{}
+		auditResponse := map[string]any{}
 		if res, ok := auditRecord["response"]; ok {
-			auditResponse = res.(map[string]interface{})
+			auditResponse = res.(map[string]any)
 			if auditResponse["path"] != plugin.Name+"/data/creds" {
 				continue
 			}

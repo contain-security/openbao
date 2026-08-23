@@ -253,7 +253,7 @@ DONELISTHANDLING:
 		}
 	}
 	cubbyReq.SetTokenEntry(&te)
-	cubbyReq.Data = map[string]interface{}{}
+	cubbyReq.Data = map[string]any{}
 
 	// During a rewrap, store the original response, don't wrap it again.
 	if req.Path == "sys/wrapping/rewrap" {
@@ -297,7 +297,7 @@ DONELISTHANDLING:
 	// Store info for lookup
 	cubbyReq.WrapInfo = nil
 	cubbyReq.Path = "cubbyhole/wrapinfo"
-	cubbyReq.Data = map[string]interface{}{
+	cubbyReq.Data = map[string]any{
 		"creation_ttl":  resp.WrapInfo.TTL,
 		"creation_time": creationTime,
 	}
@@ -411,7 +411,7 @@ func (c *Core) validateWrappingToken(ctx context.Context, req *logical.Request) 
 			return false, fmt.Errorf("wrapping token could not be parsed: %w", err)
 		}
 		var claims jwt.Claims
-		allClaims := make(map[string]interface{})
+		allClaims := make(map[string]any)
 		if err = parsedJWT.Claims(&c.wrappingJWTKey.PublicKey, &claims, &allClaims); err != nil {
 			return false, fmt.Errorf("wrapping token signature could not be validated: %w", err)
 		}
@@ -457,7 +457,21 @@ func (c *Core) validateWrappingToken(ctx context.Context, req *logical.Request) 
 		req.SetTokenEntry(te)
 	}
 
-	return c.validateControlGroup(ctx, te, logical.ReadOperation)
+	// check token for control group deferral
+	_, cgErr := c.getControlGroupFromTokenEntry(ctx, te)
+	// if there's no control group, token is valid
+	if errors.Is(cgErr, ErrControlGroupNotFound) {
+		return true, nil
+	}
+	if cgErr != nil {
+		return false, cgErr
+	}
+	originalRequest, err := c.getRequestFromTokenEntry(ctx, te)
+	if err != nil {
+		return false, err
+	}
+	// validate authorization of the control group
+	return c.validateControlGroup(ctx, te, originalRequest.Operation)
 }
 
 func IsWrappingToken(te *logical.TokenEntry) bool {

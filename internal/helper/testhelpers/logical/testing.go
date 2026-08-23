@@ -74,7 +74,7 @@ type TestStep struct {
 	Path string
 
 	// Arguments to pass in
-	Data map[string]interface{}
+	Data map[string]any
 
 	// Check is called after this step is executed in order to test that
 	// the step executed successfully. If this is not set, then the next
@@ -270,7 +270,7 @@ func Test(tt TestT, c TestCase) {
 	}
 	var tokenPolicies []string
 	if tokenPoliciesRaw, ok := tokenInfo.Data["policies"]; ok {
-		if tokenPoliciesSliceRaw, ok := tokenPoliciesRaw.([]interface{}); ok {
+		if tokenPoliciesSliceRaw, ok := tokenPoliciesRaw.([]any); ok {
 			for _, p := range tokenPoliciesSliceRaw {
 				tokenPolicies = append(tokenPolicies, p.(string))
 			}
@@ -391,13 +391,7 @@ func Test(tt TestT, c TestCase) {
 	if c.CredentialFactory != nil || c.CredentialBackend != nil {
 		rollbackPath = "auth/" + rollbackPath
 	}
-	req := logical.RollbackRequest(rollbackPath)
-	req.Data["immediate"] = true
-	req.ClientToken = client.Token()
-	resp, err := core.HandleRequest(ctx, req)
-	if err == nil && resp.IsError() {
-		err = fmt.Errorf("erroneous response:\n\n%#v", resp)
-	}
+	err = core.DoRollback(ctx, rollbackPath)
 	if err != nil {
 		if !errwrap.Contains(err, logical.ErrUnsupportedOperation.Error()) {
 			tt.Error(fmt.Sprintf("[ERR] Rollback error: %s", err))
@@ -523,9 +517,9 @@ func TestCheckError() TestCheckFunc {
 //
 // Users should just use a *testing.T object, which implements this.
 type TestT interface {
-	Error(args ...interface{})
-	Fatal(args ...interface{})
-	Skip(args ...interface{})
+	Error(args ...any)
+	Fatal(args ...any)
+	Skip(args ...any)
 }
 
 var testTesting = false

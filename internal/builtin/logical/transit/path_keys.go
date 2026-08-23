@@ -136,6 +136,12 @@ key.`,
 				Default:     0,
 				Description: fmt.Sprintf("The key size in bytes for the algorithm.  Only applies to HMAC and must be no fewer than %d bytes and no more than %d", keysutil.HmacMinKeySize, keysutil.HmacMaxKeySize),
 			},
+			"external_key_ref": {
+				Type: framework.TypeString,
+				Description: `Reference to the external key to use. This follows
+the format <config name>:<key name>, uniquely identifying the key configured
+under sys/external-keys/configs/<config name>/keys/<key name>.`,
+			},
 		},
 
 		Operations: map[logical.Operation]framework.OperationHandler{
@@ -246,6 +252,7 @@ func (b *backend) pathPolicyWrite(ctx context.Context, req *logical.Request, d *
 	keyType := d.Get("type").(string)
 	keySize := d.Get("key_size").(int)
 	exportable := d.Get("exportable").(bool)
+	externalKeyRef := d.Get("external_key_ref").(string)
 	allowPlaintextBackup := d.Get("allow_plaintext_backup").(bool)
 	autoRotatePeriod := time.Second * time.Duration(d.Get("auto_rotate_period").(int))
 
@@ -266,6 +273,7 @@ func (b *backend) pathPolicyWrite(ctx context.Context, req *logical.Request, d *
 		Exportable:           exportable,
 		AllowPlaintextBackup: allowPlaintextBackup,
 		AutoRotatePeriod:     autoRotatePeriod,
+		ExternalKeyRef:       externalKeyRef,
 	}
 
 	switch keyType {
@@ -293,17 +301,34 @@ func (b *backend) pathPolicyWrite(ctx context.Context, req *logical.Request, d *
 		polReq.KeyType = keysutil.KeyType_RSA4096
 	case "hmac":
 		polReq.KeyType = keysutil.KeyType_HMAC
+	case "external-key":
+		polReq.KeyType = keysutil.KeyType_ExternalKey
 	default:
 		return logical.ErrorResponse("unknown key type %v", keyType), logical.ErrInvalidRequest
 	}
 	if keySize != 0 {
-		if polReq.KeyType != keysutil.KeyType_HMAC {
+		if polReq.KeyType != keysutil.KeyType_HMAC && polReq.KeyType != keysutil.KeyType_ExternalKey {
 			return logical.ErrorResponse("key_size is not valid for algorithm %v", polReq.KeyType), logical.ErrInvalidRequest
 		}
 		if keySize < keysutil.HmacMinKeySize || keySize > keysutil.HmacMaxKeySize {
 			return logical.ErrorResponse("invalid key_size %d", keySize), logical.ErrInvalidRequest
 		}
 		polReq.KeySize = keySize
+	}
+	if polReq.KeyType == keysutil.KeyType_ExternalKey {
+		if polReq.ExternalKeyRef == "" {
+			return logical.ErrorResponse("must provide external_key_ref to create policy of type external-key"), logical.ErrInvalidRequest
+		}
+
+		if autoRotatePeriod != 0 {
+			return logical.ErrorResponse("cannot enable auto-rotation with external keys"), nil
+		}
+
+		if _, err := b.System().GetExternalKey(ctx, polReq.ExternalKeyRef); err != nil {
+			return logical.ErrorResponse("failed to fetch external key: %s", err), logical.ErrInvalidRequest
+		}
+	} else if polReq.ExternalKeyRef != "" {
+		return logical.ErrorResponse("must provide type=external-key to use external_key_ref"), logical.ErrInvalidRequest
 	}
 
 	p, upserted, err := b.GetPolicy(ctx, polReq, b.GetRandomReader())
@@ -363,7 +388,7 @@ func (b *backend) pathPolicyRead(ctx context.Context, req *logical.Request, d *f
 func (b *backend) formatKeyPolicy(p *keysutil.Policy, context []byte) (*logical.Response, error) {
 	// Return the response
 	resp := &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"name":                   p.Name,
 			"type":                   p.Type.String(),
 			"derived":                p.Derived,
@@ -392,13 +417,13 @@ func (b *backend) formatKeyPolicy(p *keysutil.Policy, context []byte) (*logical.
 	}
 
 	if p.BackupInfo != nil {
-		resp.Data["backup_info"] = map[string]interface{}{
+		resp.Data["backup_info"] = map[string]any{
 			"time":    p.BackupInfo.Time,
 			"version": p.BackupInfo.Version,
 		}
 	}
 	if p.RestoreInfo != nil {
-		resp.Data["restore_info"] = map[string]interface{}{
+		resp.Data["restore_info"] = map[string]any{
 			"time":    p.RestoreInfo.Time,
 			"version": p.RestoreInfo.Version,
 		}
@@ -427,7 +452,7 @@ func (b *backend) formatKeyPolicy(p *keysutil.Policy, context []byte) (*logical.
 		resp.Data["keys"] = retKeys
 
 	case keysutil.KeyType_ECDSA_P256, keysutil.KeyType_ECDSA_P384, keysutil.KeyType_ECDSA_P521, keysutil.KeyType_ED25519, keysutil.KeyType_RSA2048, keysutil.KeyType_RSA3072, keysutil.KeyType_RSA4096:
-		retKeys := map[string]map[string]interface{}{}
+		retKeys := map[string]map[string]any{}
 		for k, v := range p.Keys {
 			key := asymKey{
 				PublicKey:    v.FormattedPublicKey,
@@ -494,6 +519,12 @@ func (b *backend) formatKeyPolicy(p *keysutil.Policy, context []byte) (*logical.
 			}
 
 			retKeys[k] = structtomap.Map(key)
+		}
+		resp.Data["keys"] = retKeys
+	case keysutil.KeyType_ExternalKey:
+		retKeys := map[string]string{}
+		for k, v := range p.Keys {
+			retKeys[k] = v.ExternalKeyRef
 		}
 		resp.Data["keys"] = retKeys
 	}
