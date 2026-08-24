@@ -189,18 +189,6 @@ func TestConsulBackend_Fencing_RegisterActiveNodeLock(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects a typed-nil lock", func(t *testing.T) {
-		// Passes the type assertion, so without an explicit check it would be
-		// stored and then panic the active node on the first write.
-		before := backend.activeNodeLock.Load()
-		if err := backend.RegisterActiveNodeLock((*ConsulLock)(nil)); err == nil {
-			t.Error("expected a nil consul lock to be rejected")
-		}
-		if backend.activeNodeLock.Load() != before {
-			t.Error("a rejected lock was stored anyway")
-		}
-	})
-
 	t.Run("a session-less lock fails writes closed", func(t *testing.T) {
 		// Never locked, so it has no session and cannot fence anything.
 		// Registration is accepted -- the SDK contract gives no way to
@@ -238,6 +226,26 @@ func TestConsulBackend_Fencing_RegisterActiveNodeLock(t *testing.T) {
 		}
 		if pair.Session != session {
 			t.Errorf("lock reports session %q but Consul holds the key with %q", session, pair.Session)
+		}
+	})
+
+	// Deliberately last: this has to run with a real lock already registered.
+	// atomic.Pointer.Load cannot tell "never stored" from "stored a nil", so
+	// with nothing registered beforehand the not-stored assertion compares
+	// nil against nil and holds however the code behaves. Storing a nil is
+	// not a harmless slip either -- fencingOps reads it as "no lock
+	// registered yet" and returns no check, silently unfencing every
+	// subsequent write.
+	t.Run("rejects a typed-nil lock", func(t *testing.T) {
+		before := backend.activeNodeLock.Load()
+		if before == nil {
+			t.Fatal("this case is only meaningful once a real lock is registered")
+		}
+		if err := backend.RegisterActiveNodeLock((*ConsulLock)(nil)); err == nil {
+			t.Error("expected a nil consul lock to be rejected")
+		}
+		if backend.activeNodeLock.Load() != before {
+			t.Error("a rejected lock was stored anyway, which would unfence every later write")
 		}
 	})
 }
@@ -614,9 +622,13 @@ func TestConsulBackend_Fencing_TakeoverRefusesFormerLeaderWrites(t *testing.T) {
 
 	// Pin the path under test: node A still believes it holds the lock, so
 	// the next operation carries a real session check to Consul rather than
-	// stopping at the local guard. The first refused operation is the only
-	// one that reaches Consul -- refusing it steps the node down, which
-	// clears the session -- so the destructive verb goes first.
+	// stopping at the local guard. Only the first refused operation reaches
+	// Consul -- refusing it steps the node down, which clears the session --
+	// so the destructive verb goes first, and the delete assertion below
+	// says "by consul" to record which route it is meant to take. These
+	// checks assert the transition, not the ordering: swapping the two verbs
+	// would still satisfy both, so the delete-through-Consul property rests
+	// on that ordering being kept.
 	if _, current := lockA.Info(); current != sessionA {
 		t.Fatalf("node A should still believe it holds the lock with %q, reports %q", sessionA, current)
 	}
@@ -651,6 +663,10 @@ func TestConsulBackend_Fencing_TakeoverRefusesFormerLeaderWrites(t *testing.T) {
 	// Losing the lock must not be terminal. A node fenced out and left fenced
 	// forever is an availability failure as total as the corruption this
 	// guards against, and nothing else in the suite would notice it.
+	// Deferred as well as called, so a failure between here and there does
+	// not leave B's session alive for the rest of the run. Unlock is
+	// idempotent, so the explicit call still asserts it succeeds.
+	defer func() { _ = lockB.Unlock() }()
 	if err := lockB.Unlock(); err != nil {
 		t.Fatalf("node B failed to release the lock: %v", err)
 	}
@@ -660,8 +676,11 @@ func TestConsulBackend_Fencing_TakeoverRefusesFormerLeaderWrites(t *testing.T) {
 		t.Fatalf("LockWith failed: %v", err)
 	}
 	lockA2 := lA2.(*ConsulLock)
+	// Bounded like every other blocking acquire here, so a hang fails this
+	// test rather than panicking the whole package on the global timeout.
 	stopA2 := make(chan struct{})
-	defer close(stopA2)
+	a2Timer := time.AfterFunc(60*time.Second, func() { close(stopA2) })
+	defer a2Timer.Stop()
 
 	leaderChA2, err := lockA2.Lock(stopA2)
 	if err != nil {
@@ -876,7 +895,12 @@ func TestConsulBackend_Fencing_ConcurrentWritesDuringTakeover(t *testing.T) {
 		t.Errorf("expected the lock to have been released after losing the session, still holds %q", remaining)
 	}
 
-	// And storage must agree with what the writes reported.
+	// And storage must agree with what the writes reported. The refused-but-
+	// present direction assumes a write reports failure only if it did not
+	// commit, which holds here but is not guaranteed in general: a
+	// transaction that commits and then loses its response is retried, and
+	// the retry is fenced, so the caller sees a refusal for a write that
+	// landed. Against a local agent that has not been observed.
 	for i, err := range results {
 		key := fmt.Sprintf("concurrent/key-%02d", i)
 		got, getErr := backend.Get(ctx, key)
