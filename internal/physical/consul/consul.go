@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -23,9 +24,10 @@ import (
 
 // compile-time interface checks to ensure compile knows available interfaces
 var (
-	_ physical.Backend   = (*ConsulBackend)(nil)
-	_ physical.HABackend = (*ConsulBackend)(nil)
-	_ physical.Lock      = (*ConsulLock)(nil)
+	_ physical.Backend          = (*ConsulBackend)(nil)
+	_ physical.HABackend        = (*ConsulBackend)(nil)
+	_ physical.FencingHABackend = (*ConsulBackend)(nil)
+	_ physical.Lock             = (*ConsulLock)(nil)
 )
 
 type ServiceStatus struct {
@@ -39,6 +41,7 @@ type ServiceStatus struct {
 type ConsulBackend struct {
 	client      *api.Client
 	kv          *api.KV
+	txn         *api.Txn
 	path        string
 	logger      hclog.Logger
 	retryConfig RetryConfig
@@ -52,6 +55,11 @@ type ConsulBackend struct {
 	haEnabled  bool
 	sessionTTL time.Duration
 	lockDelay  time.Duration
+
+	// activeNodeLock holds the lock this node won leadership with, once core
+	// has registered it. Writes are checked against its session so a node
+	// that has lost the lock without noticing cannot still commit.
+	activeNodeLock atomic.Pointer[ConsulLock]
 }
 
 // ConsulLock implements the physical.Lock interface
@@ -63,12 +71,15 @@ type ConsulLock struct {
 	sessionTTL time.Duration
 	lockDelay  time.Duration
 
-	// Internal state. The Consul API lock helper owns the session, its
-	// periodic renewal and the leadership monitor, so none of that is
-	// tracked here.
-	mu       sync.Mutex // Protects the fields below
-	lock     *api.Lock  // Built on first Lock(), reused after that
-	unlocked bool       // Track if we've been unlocked
+	// Internal state. The Consul API lock helper still performs acquisition
+	// and watches for leadership loss, but the session is ours: it is the
+	// fencing token every write is checked against, and the helper does not
+	// expose the one it would otherwise create for itself.
+	mu        sync.Mutex    // Protects the fields below
+	lock      *api.Lock     // Built on first Lock(), reused after that
+	session   string        // Consul session backing the lock
+	renewStop chan struct{} // Closed to stop renewing the session
+	unlocked  bool          // Track if we've been unlocked
 }
 
 // Defaults for the HA session. defaultSessionTTL is the lifetime of the
@@ -465,6 +476,7 @@ func NewConsulBackend(conf map[string]string, logger hclog.Logger) (physical.Bac
 	backend := &ConsulBackend{
 		client:      client,
 		kv:          client.KV(),
+		txn:         client.Txn(),
 		path:        path,
 		logger:      logger,
 		retryConfig: retryConfig,
@@ -681,6 +693,17 @@ func (c *ConsulBackend) isRetryableError(err error) bool {
 		return false
 	}
 
+	// Losing the active lock is terminal for the write: leadership is gone
+	// and no retry will bring it back within this call.
+	if errors.Is(err, ErrLostActiveLock) {
+		return false
+	}
+
+	// An oversized value is rejected identically every time.
+	if strings.Contains(err.Error(), physical.ErrValueTooLarge) || strings.Contains(err.Error(), "too large") {
+		return false
+	}
+
 	errStr := strings.ToLower(err.Error())
 
 	// Network-related errors that are typically transient
@@ -752,17 +775,15 @@ func (c *ConsulBackend) Put(ctx context.Context, entry *physical.Entry) error {
 	consulKey := c.consulKey(entry.Key)
 
 	return c.withRetry(ctx, "put", func() error {
-		// Create KV pair for Consul
-		pair := &api.KVPair{
-			Key:   consulKey,
-			Value: entry.Value,
-		}
-
-		// Perform the put operation with context
-		writeOpts := &api.WriteOptions{}
-		writeOpts = writeOpts.WithContext(ctx)
-
-		_, err := c.kv.Put(pair, writeOpts)
+		// Submitted as a transaction so the write can be paired atomically
+		// with a check that this node still holds the active lock.
+		err := c.runFencedTxn(ctx, "store",
+			&api.KVTxnOp{Verb: api.KVSet, Key: consulKey, Value: entry.Value},
+			func() error {
+				writeOpts := (&api.WriteOptions{}).WithContext(ctx)
+				_, err := c.kv.Put(&api.KVPair{Key: consulKey, Value: entry.Value}, writeOpts)
+				return mapWriteError(err)
+			})
 		if err != nil {
 			// Check if the error is due to context cancellation
 			if ctx.Err() != nil {
@@ -773,7 +794,7 @@ func (c *ConsulBackend) Put(ctx context.Context, entry *physical.Entry) error {
 				return ctx.Err()
 			}
 
-			return fmt.Errorf("failed to store key %q in consul: %w", entry.Key, err)
+			return fmt.Errorf("key %q: %w", entry.Key, err)
 		}
 
 		c.logger.Trace("successfully stored key in consul",
@@ -871,11 +892,15 @@ func (c *ConsulBackend) Delete(ctx context.Context, key string) error {
 	consulKey := c.consulKey(key)
 
 	return c.withRetry(ctx, "delete", func() error {
-		// Perform the delete operation with context
-		writeOpts := &api.WriteOptions{}
-		writeOpts = writeOpts.WithContext(ctx)
-
-		_, err := c.kv.Delete(consulKey, writeOpts)
+		// Submitted as a transaction so the delete can be paired atomically
+		// with a check that this node still holds the active lock.
+		err := c.runFencedTxn(ctx, "delete",
+			&api.KVTxnOp{Verb: api.KVDelete, Key: consulKey},
+			func() error {
+				writeOpts := (&api.WriteOptions{}).WithContext(ctx)
+				_, err := c.kv.Delete(consulKey, writeOpts)
+				return err
+			})
 		if err != nil {
 			// Check if the error is due to context cancellation
 			if ctx.Err() != nil {
@@ -886,7 +911,7 @@ func (c *ConsulBackend) Delete(ctx context.Context, key string) error {
 				return ctx.Err()
 			}
 
-			return fmt.Errorf("failed to delete key %q from consul: %w", key, err)
+			return fmt.Errorf("key %q: %w", key, err)
 		}
 
 		c.logger.Trace("successfully deleted key from consul",
@@ -1133,9 +1158,11 @@ func (l *ConsulLock) Lock(stopCh <-chan struct{}) (<-chan struct{}, error) {
 		}
 	}
 	if err != nil {
+		l.abandonSession()
 		return nil, fmt.Errorf("failed to acquire consul lock: %w", err)
 	}
 	if leaderCh == nil {
+		l.abandonSession()
 		l.logger.Debug("consul lock acquisition interrupted before acquiring", "key", l.key)
 		return nil, nil
 	}
@@ -1165,30 +1192,105 @@ func (l *ConsulLock) apiLock() (*api.Lock, error) {
 		l.sessionTTL = validTTL
 	}
 	ttl := l.sessionTTL.String()
-	sessionName := fmt.Sprintf("openbao-lock-%s", l.key)
+
+	// Create the session here rather than letting the helper do it. The
+	// helper keeps the session it creates private, and that value is the
+	// fencing token: writes carry a check against it so a node that has
+	// silently lost the lock cannot still commit. Supplying a session also
+	// makes renewing and destroying it ours to do -- the helper only manages
+	// the lifecycle of a session it created itself.
+	session, _, err := l.backend.client.Session().Create(&api.SessionEntry{
+		Name:      fmt.Sprintf("openbao-lock-%s", l.key),
+		TTL:       ttl,
+		LockDelay: l.lockDelay,
+		Behavior:  api.SessionBehaviorRelease,
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create consul session: %w", err)
+	}
 
 	lock, err := l.backend.client.LockOpts(&api.LockOptions{
-		Key:   l.backend.consulKey(l.key),
-		Value: []byte(l.value),
-		// SessionOpts drives session creation; SessionTTL is set to the same
-		// value because the helper's periodic renewal reads that field rather
-		// than SessionOpts.
-		SessionTTL: ttl,
-		SessionOpts: &api.SessionEntry{
-			Name:      sessionName,
-			TTL:       ttl,
-			LockDelay: l.lockDelay,
-			Behavior:  api.SessionBehaviorRelease,
-		},
+		Key:              l.backend.consulKey(l.key),
+		Value:            []byte(l.value),
+		Session:          session,
+		SessionTTL:       ttl,
 		MonitorRetries:   lockMonitorRetries,
 		MonitorRetryTime: lockMonitorRetryTime,
 	})
 	if err != nil {
+		if _, destroyErr := l.backend.client.Session().Destroy(session, nil); destroyErr != nil {
+			l.logger.Warn("failed to destroy consul session after lock setup failed", "session", session, "error", destroyErr)
+		}
 		return nil, fmt.Errorf("failed to create consul lock: %w", err)
 	}
 
+	renewStop := make(chan struct{})
+	go func() {
+		// RenewPeriodic returns when the session expires or renewStop is
+		// closed, and destroys the session on the way out.
+		if err := l.backend.client.Session().RenewPeriodic(ttl, session, nil, renewStop); err != nil {
+			l.logger.Warn("consul session renewal ended", "session", session, "error", err)
+		}
+	}()
+
 	l.lock = lock
+	l.session = session
+	l.renewStop = renewStop
 	return lock, nil
+}
+
+// abandonSession tears down the session built for an acquisition that did not
+// end in holding the lock.
+//
+// The helper only cleans up a session it created itself, so supplying our own
+// makes this ours to do -- and core does not call Unlock when acquisition is
+// interrupted, it simply drops the lock object. Without this each abandoned
+// attempt would leave a live Consul session and a goroutine renewing it
+// forever, and a standby retries acquisition repeatedly.
+//
+// The lock is left reusable rather than marked unlocked: the SDK's HA suite
+// calls Lock again on the same object after an interrupted attempt.
+func (l *ConsulLock) abandonSession() {
+	l.mu.Lock()
+	renewStop := l.renewStop
+	session := l.session
+	l.lock = nil
+	l.session = ""
+	l.renewStop = nil
+	l.mu.Unlock()
+
+	l.endSession(renewStop, session)
+}
+
+// endSession stops renewing a session and destroys it.
+//
+// Closing the stop channel alone would eventually destroy it -- that is what
+// RenewPeriodic does on its way out -- but only once that goroutine is
+// scheduled, leaving the session briefly alive and, if it still held the key,
+// charging a lock delay against the next acquirer. Destroying it here makes
+// the teardown complete by the time this returns.
+func (l *ConsulLock) endSession(renewStop chan struct{}, session string) {
+	if renewStop != nil {
+		close(renewStop)
+	}
+	if session == "" {
+		return
+	}
+	if _, err := l.backend.client.Session().Destroy(session, nil); err != nil {
+		// Not fatal: the session lapses on its own once renewal has stopped.
+		l.logger.Warn("failed to destroy consul session", "session", session, "error", err)
+	}
+}
+
+// Info returns the lock key and the Consul session holding it.
+//
+// The session is the fencing token: a write that carries a check against it
+// commits only while this node still holds the lock. Both are empty until the
+// lock has been built, which happens on the first Lock() call.
+func (l *ConsulLock) Info() (key, session string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.backend.consulKey(l.key), l.session
 }
 
 // Unlock releases the lock and tears down its session.
@@ -1200,6 +1302,10 @@ func (l *ConsulLock) Unlock() error {
 		return nil // never locked, or already unlocked
 	}
 	l.unlocked = true
+	renewStop := l.renewStop
+	session := l.session
+	l.renewStop = nil
+	l.session = ""
 	l.mu.Unlock()
 
 	l.logger.Debug("releasing consul lock", "key", l.key)
@@ -1207,17 +1313,24 @@ func (l *ConsulLock) Unlock() error {
 	// Not holding the lock is not an error: the session may already have been
 	// invalidated, which is one of the ways leadership is lost.
 	//
-	// Releasing clears the session from the key and then stops the renewal
-	// goroutine, which destroys the session on its way out; session_ttl is
-	// only the backstop if that destroy fails. The key itself stays in place
-	// with its session cleared, which is the normal Consul lock lifecycle --
-	// Value() reports an unheld key as not held.
-	if err := lock.Unlock(); err != nil && !errors.Is(err, api.ErrLockNotHeld) {
-		return fmt.Errorf("failed to release consul lock: %w", err)
+	// Release first, so the key's session is cleared while the session is
+	// still alive and no lock delay is charged against the next acquirer.
+	// The key itself stays in place with its session cleared, which is the
+	// normal Consul lock lifecycle -- Value() reports an unheld key as not
+	// held.
+	releaseErr := lock.Unlock()
+	if releaseErr != nil && !errors.Is(releaseErr, api.ErrLockNotHeld) {
+		releaseErr = fmt.Errorf("failed to release consul lock: %w", releaseErr)
+	} else {
+		releaseErr = nil
 	}
 
+	// Then end the session. It is ours to end now that we create it, and the
+	// key has already been released, so nothing is holding a lock delay open.
+	l.endSession(renewStop, session)
+
 	l.logger.Info("consul lock released", "key", l.key)
-	return nil
+	return releaseErr
 }
 
 // Value reports whether the lock is held by ANY node, together with the value
@@ -1296,6 +1409,178 @@ func (l *ConsulLock) reclaimLegacyLockKey() (bool, error) {
 	l.logger.Warn("cleared an unheld lock key left by an earlier version so it can be used as a consul lock",
 		"key", lockKey, "modify_index", pair.ModifyIndex)
 	return true, nil
+}
+
+// mapWriteError translates Consul's size rejection into the error the storage
+// layer recognises, so callers see a value-too-large failure rather than an
+// opaque one.
+//
+// The threshold differs by endpoint: a plain KV write is measured against the
+// raw value, while a transaction is measured against the encoded request body,
+// so a fenced write hits the limit at a somewhat smaller entry than an
+// unfenced one. Consul exposes both as kv_max_value_size and txn_max_req_len.
+func mapWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "too large") {
+		return fmt.Errorf("%s: %w", physical.ErrValueTooLarge, err)
+	}
+	return err
+}
+
+// ErrLostActiveLock is returned when a write is rejected because this node no
+// longer holds the active lock. Retrying cannot help -- leadership is gone --
+// so it is deliberately non-retryable: a demoted node must stop writing at
+// once rather than keep attempting for the remainder of the retry budget.
+var ErrLostActiveLock = errors.New("no longer the active node")
+
+// RegisterActiveNodeLock records the lock this node became active with, so
+// every subsequent write can be fenced against its session.
+//
+// Core calls this immediately after a node wins leadership. Until it does --
+// during cluster initialization, before any lock exists -- writes go through
+// unfenced, which the physical.FencingHABackend contract requires.
+func (c *ConsulBackend) RegisterActiveNodeLock(l physical.Lock) error {
+	cl, ok := l.(*ConsulLock)
+	if !ok {
+		return fmt.Errorf("invalid lock type %T, expected a consul lock", l)
+	}
+	if cl == nil {
+		return fmt.Errorf("cannot register a nil consul lock")
+	}
+
+	c.activeNodeLock.Store(cl)
+
+	// A lock with no session cannot fence anything. Registration still
+	// succeeds, because the interface offers no way to decline and callers
+	// legitimately register a lock whose session has already lapsed, but say
+	// so plainly: writes fail closed from here rather than proceeding
+	// unfenced.
+	key, session := cl.Info()
+	if session == "" {
+		c.logger.Warn("registered an active node lock with no session; writes will be refused until a lock is held", "key", key)
+		return nil
+	}
+
+	c.logger.Info("registered active node lock", "key", key, "session", session)
+	return nil
+}
+
+// fencingOps returns the operations a write should be prefixed with, along
+// with the session they check.
+//
+// The check is placed first so a failure at index 0 identifies the fence
+// rather than the write itself. An empty result means the write proceeds
+// unfenced, which happens in exactly two cases the contract calls for: before
+// core has registered a lock, and for writes explicitly marked unfenced so a
+// sealed cluster can be cleared and re-initialised.
+func (c *ConsulBackend) fencingOps(ctx context.Context) (api.TxnOps, string, error) {
+	// Nothing has claimed leadership yet, so there is no session to check
+	// against. This is cluster initialization, which the contract requires to
+	// work before any lock exists.
+	lock := c.activeNodeLock.Load()
+	if lock == nil {
+		return nil, "", nil
+	}
+
+	// Explicitly exempted writes bypass regardless, so a sealed cluster can be
+	// cleared and re-initialised even while a lock session exists.
+	if physical.IsUnfencedWrite(ctx) {
+		return nil, "", nil
+	}
+
+	key, session := lock.Info()
+	if key == "" || session == "" {
+		// A lock was registered and has since been released or lost. Falling
+		// back to an unfenced write here would reopen the very gap fencing
+		// closes: it is precisely the moment this node must stop writing.
+		return nil, "", ErrLostActiveLock
+	}
+
+	return api.TxnOps{{
+		KV: &api.KVTxnOp{
+			Verb:    api.KVCheckSession,
+			Key:     key,
+			Session: session,
+		},
+	}}, session, nil
+}
+
+// runFencedTxn submits ops as a single Consul transaction, prefixed with a
+// session check when this node holds a registered lock.
+//
+// Consul applies a transaction atomically, so pairing the check with the write
+// is what makes fencing meaningful: the write cannot land unless the session
+// still holds the lock at the instant it commits.
+func (c *ConsulBackend) runFencedTxn(ctx context.Context, op string, kvOp *api.KVTxnOp, unfenced func() error) error {
+	fencing, session, err := c.fencingOps(ctx)
+	if err != nil {
+		return fmt.Errorf("refusing to %s key in consul: %w", op, err)
+	}
+
+	if len(fencing) == 0 {
+		// Nothing to check against, so use the plain KV endpoint. That is not
+		// merely simpler: Consul measures the transaction endpoint's size
+		// limit against the encoded request body rather than the raw value,
+		// so routing unfenced writes through it would lower the largest entry
+		// this backend can store, for no benefit.
+		return unfenced()
+	}
+
+	all := append(fencing, &api.TxnOp{KV: kvOp})
+
+	queryOpts := (&api.QueryOptions{}).WithContext(ctx)
+	ok, resp, _, err := c.txn.Txn(all, queryOpts)
+	if err != nil {
+		return fmt.Errorf("failed to %s key in consul: %w", op, mapWriteError(err))
+	}
+	if ok && len(resp.Errors) == 0 {
+		return nil
+	}
+
+	// A rejected transaction reports which operation failed. Index 0 is the
+	// session check whenever one was added, so that is how a lost lock is
+	// told apart from an ordinary write rejection.
+	var errs []string
+	fenced := false
+	for _, e := range resp.Errors {
+		errs = append(errs, e.What)
+		if len(fencing) > 0 && e.OpIndex == 0 {
+			fenced = true
+		}
+	}
+
+	if fenced {
+		c.stepDown(session)
+		return fmt.Errorf("failed to %s key in consul: %w", op, ErrLostActiveLock)
+	}
+	if len(errs) == 0 {
+		return fmt.Errorf("failed to %s key in consul: transaction rejected without an explanation", op)
+	}
+	return fmt.Errorf("failed to %s key in consul: %s", op, strings.Join(errs, "; "))
+}
+
+// stepDown releases the active node lock after a write was fenced out.
+//
+// The lock monitor would reach the same conclusion on its own, but only after
+// spending its retry budget; giving up leadership here means core can start
+// standing down while a successor is already taking over. The session is
+// re-read first so a lock acquired since the failed write is not released by
+// mistake.
+func (c *ConsulBackend) stepDown(session string) {
+	lock := c.activeNodeLock.Load()
+	if lock == nil {
+		return
+	}
+	if _, current := lock.Info(); current != session {
+		return
+	}
+
+	c.logger.Warn("session check failed on write, giving up active node lock", "session", session)
+	if err := lock.Unlock(); err != nil {
+		c.logger.Error("failed to release the active node lock after a fenced write", "error", err)
+	}
 }
 
 // LockWith attempts to acquire a lock for HA coordination
