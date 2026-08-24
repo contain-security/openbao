@@ -700,7 +700,7 @@ func (c *ConsulBackend) isRetryableError(err error) bool {
 	}
 
 	// An oversized value is rejected identically every time.
-	if strings.Contains(err.Error(), physical.ErrValueTooLarge) || strings.Contains(err.Error(), "too large") {
+	if strings.Contains(err.Error(), "too large") {
 		return false
 	}
 
@@ -1151,6 +1151,7 @@ func (l *ConsulLock) Lock(stopCh <-chan struct{}) (<-chan struct{}, error) {
 		// and retry once.
 		retry, reclaimErr := l.reclaimLegacyLockKey()
 		if reclaimErr != nil {
+			l.abandonSession()
 			return nil, fmt.Errorf("%w (while handling %w)", reclaimErr, err)
 		}
 		if retry {
@@ -1158,7 +1159,11 @@ func (l *ConsulLock) Lock(stopCh <-chan struct{}) (<-chan struct{}, error) {
 		}
 	}
 	if err != nil {
-		l.abandonSession()
+		// ErrLockHeld means this object already holds the lock, so its
+		// session is live and must not be torn down.
+		if !errors.Is(err, api.ErrLockHeld) {
+			l.abandonSession()
+		}
 		return nil, fmt.Errorf("failed to acquire consul lock: %w", err)
 	}
 	if leaderCh == nil {

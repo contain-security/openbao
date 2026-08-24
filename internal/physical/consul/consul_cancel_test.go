@@ -148,7 +148,7 @@ type TestableConsulBackend struct {
 // Put mirrors the cancellation handling in ConsulBackend.Put. It writes via
 // the plain KV client rather than the fenced transaction the real backend now
 // uses, because what these tests exercise is the context handling around the
-// write, not the write itself but uses the testable KV interface
+// write, not the write itself
 func (c *TestableConsulBackend) Put(ctx context.Context, entry *physical.Entry) error {
 	defer func(start time.Time) {
 		c.logger.Debug("consul put operation completed",

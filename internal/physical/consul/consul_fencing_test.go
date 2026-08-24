@@ -388,3 +388,116 @@ func TestConsulBackend_Fencing_WriteFailureIsNotMistakenForLostLock(t *testing.T
 		t.Errorf("node stepped down over a write error: session went from %q to %q", sessionBefore, sessionAfter)
 	}
 }
+
+// TestConsulBackend_Fencing_LegacyKeyConflictReleasesSession covers the error
+// return from acquisition, as distinct from the interruption covered above.
+//
+// A lock key predating the move to Consul's lock helper carries no lock flag,
+// so acquisition rejects it outright. Reclaiming is refused too, because this
+// one is held by a live session, and the attempt ends in an error rather than
+// a clean interruption. The session built for it must still be torn down, or a
+// node retrying against such a key leaks one session and one renewal goroutine
+// per attempt.
+//
+// The reclaim's own error branch releases the session through the same call,
+// but is not reachable from a test without inducing a Consul failure mid-read,
+// so it is covered by inspection rather than here.
+func TestConsulBackend_Fencing_LegacyKeyConflictReleasesSession(t *testing.T) {
+	path := fmt.Sprintf("test/openbao/fencing-reclaimfail-%d/", time.Now().UnixNano())
+	backend := newFencingBackend(t, path)
+
+	// Seed a legacy-format key: no flags, and held by a session, which is the
+	// combination the reclaim refuses to touch. Acquisition then cannot
+	// succeed and cannot reclaim.
+	key := "core/lock"
+	holderSession, _, err := backend.client.Session().Create(&api.SessionEntry{
+		Name:     "openbao-legacy-holder",
+		TTL:      "120s",
+		Behavior: api.SessionBehaviorRelease,
+	}, nil)
+	if err != nil {
+		t.Fatalf("failed to create the holding session: %v", err)
+	}
+	t.Cleanup(func() { _, _ = backend.client.Session().Destroy(holderSession, nil) })
+
+	acquired, _, err := backend.kv.Acquire(&api.KVPair{
+		Key:     backend.consulKey(key),
+		Value:   []byte("legacy"),
+		Session: holderSession,
+	}, nil)
+	if err != nil || !acquired {
+		t.Fatalf("failed to seed the legacy key: acquired=%v err=%v", acquired, err)
+	}
+
+	l, err := backend.LockWith(key, "node-b")
+	if err != nil {
+		t.Fatalf("LockWith failed: %v", err)
+	}
+	lock := l.(*ConsulLock)
+
+	if _, err := lock.apiLock(); err != nil {
+		t.Fatalf("failed to build the lock: %v", err)
+	}
+	_, session := lock.Info()
+	if session == "" {
+		t.Fatal("expected a session to have been created for the acquisition")
+	}
+
+	stopCh := make(chan struct{})
+	timer := time.AfterFunc(30*time.Second, func() { close(stopCh) })
+	defer timer.Stop()
+
+	leaderCh, lockErr := lock.Lock(stopCh)
+	if leaderCh != nil {
+		t.Fatal("acquisition should not succeed against a held legacy key")
+	}
+	if lockErr == nil {
+		t.Fatal("expected acquisition against a held legacy key to fail")
+	}
+
+	// Whatever the failure, the session must not outlive it.
+	entry, _, err := backend.client.Session().Info(session, nil)
+	if err != nil {
+		t.Fatalf("failed to query the session: %v", err)
+	}
+	if entry != nil {
+		t.Errorf("failed acquisition leaked consul session %q", session)
+	}
+	if _, remaining := lock.Info(); remaining != "" {
+		t.Errorf("abandoned lock still reports session %q", remaining)
+	}
+}
+
+// TestConsulBackend_Fencing_HeldLockKeepsSessionOnRelock guards the other
+// direction: abandoning a session on any acquisition error would destroy the
+// session of a lock this node is actively holding, turning a caller mistake
+// into a needless failover.
+func TestConsulBackend_Fencing_HeldLockKeepsSessionOnRelock(t *testing.T) {
+	backend := newFencingBackend(t, fmt.Sprintf("test/openbao/fencing-relock-%d/", time.Now().UnixNano()))
+
+	lock, release := acquireActiveLock(t, backend, "core/lock", "node-a")
+	defer release()
+
+	_, session := lock.Info()
+	if session == "" {
+		t.Fatal("expected a held lock to report a session")
+	}
+
+	// Locking an already-held lock is a caller error, not a lost lock.
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	if _, err := lock.Lock(stopCh); err == nil {
+		t.Fatal("expected re-locking a held lock to fail")
+	}
+
+	if _, after := lock.Info(); after != session {
+		t.Errorf("session changed from %q to %q: a held lock was torn down", session, after)
+	}
+	entry, _, err := backend.client.Session().Info(session, nil)
+	if err != nil {
+		t.Fatalf("failed to query the session: %v", err)
+	}
+	if entry == nil {
+		t.Error("the session of a lock this node still holds was destroyed")
+	}
+}
