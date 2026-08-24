@@ -599,6 +599,14 @@ func TestConsulBackend_Fencing_TakeoverRefusesFormerLeaderWrites(t *testing.T) {
 		t.Fatal("timed out waiting for node B to take over the lock")
 	}
 
+	// Registered as early as B could be holding a session at all, so that a
+	// failure anywhere below still frees it rather than leaving it renewing
+	// and holding the key for the rest of the run. Releasing an unacquired
+	// lock is a no-op, and once the explicit release further down has run
+	// this becomes one, so it neither masks nor duplicates that call --
+	// which is what still asserts a release succeeds.
+	defer func() { _ = lockB.Unlock() }()
+
 	if err := nodeB.RegisterActiveNodeLock(lockB); err != nil {
 		t.Fatalf("node B failed to register its lock: %v", err)
 	}
@@ -663,10 +671,6 @@ func TestConsulBackend_Fencing_TakeoverRefusesFormerLeaderWrites(t *testing.T) {
 	// Losing the lock must not be terminal. A node fenced out and left fenced
 	// forever is an availability failure as total as the corruption this
 	// guards against, and nothing else in the suite would notice it.
-	// Deferred as well as called, so a failure between here and there does
-	// not leave B's session alive for the rest of the run. Unlock is
-	// idempotent, so the explicit call still asserts it succeeds.
-	defer func() { _ = lockB.Unlock() }()
 	if err := lockB.Unlock(); err != nil {
 		t.Fatalf("node B failed to release the lock: %v", err)
 	}
