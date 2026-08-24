@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,6 +186,18 @@ func TestConsulBackend_Fencing_RegisterActiveNodeLock(t *testing.T) {
 	t.Run("rejects a foreign lock type", func(t *testing.T) {
 		if err := backend.RegisterActiveNodeLock(nil); err == nil {
 			t.Error("expected a lock of the wrong type to be rejected")
+		}
+	})
+
+	t.Run("rejects a typed-nil lock", func(t *testing.T) {
+		// Passes the type assertion, so without an explicit check it would be
+		// stored and then panic the active node on the first write.
+		before := backend.activeNodeLock.Load()
+		if err := backend.RegisterActiveNodeLock((*ConsulLock)(nil)); err == nil {
+			t.Error("expected a nil consul lock to be rejected")
+		}
+		if backend.activeNodeLock.Load() != before {
+			t.Error("a rejected lock was stored anyway")
 		}
 	})
 
@@ -499,5 +513,381 @@ func TestConsulBackend_Fencing_HeldLockKeepsSessionOnRelock(t *testing.T) {
 	}
 	if entry == nil {
 		t.Error("the session of a lock this node still holds was destroyed")
+	}
+}
+
+// TestConsulBackend_Fencing_TakeoverRefusesFormerLeaderWrites is the scenario
+// the whole mechanism exists for, played out with two real nodes rather than
+// simulated by hand.
+//
+// Node A holds the lock and is writing. Its session lapses — a partition, a
+// paused process, a Consul it briefly cannot reach — and node B, already
+// waiting, acquires the lock and starts writing. A has not yet noticed. Every
+// write A issues from that moment must be refused, and B's must succeed.
+//
+// The other tests in this file destroy the session directly to reach the same
+// internal state. This one lets Consul hand leadership over on its own, so it
+// also covers the ordering: B genuinely holds the lock at the instant A's
+// writes are rejected.
+func TestConsulBackend_Fencing_TakeoverRefusesFormerLeaderWrites(t *testing.T) {
+	path := fmt.Sprintf("test/openbao/fencing-takeover-%d/", time.Now().UnixNano())
+
+	// A short lock delay so the successor can take over without waiting out
+	// the default. The delay is a safety margin for exactly this transition;
+	// shortening it here narrows the window rather than removing the check.
+	newNode := func() *ConsulBackend {
+		t.Helper()
+		cfg := requireConsul(t, path)
+		cfg["ha_enabled"] = "true"
+		cfg["lock_delay"] = "1ms"
+		b, err := NewConsulBackend(cfg, hclog.NewNullLogger())
+		if err != nil {
+			failOrSkip(t, "Consul not available: %v", err)
+		}
+		return b.(*ConsulBackend)
+	}
+
+	nodeA, nodeB := newNode(), newNode()
+
+	// A becomes active.
+	lockA, releaseA := acquireActiveLock(t, nodeA, "core/lock", "node-a")
+	defer releaseA()
+
+	if err := nodeA.Put(context.Background(), &physical.Entry{Key: "shared/key", Value: []byte("from-a")}); err != nil {
+		t.Fatalf("the active node should be able to write: %v", err)
+	}
+
+	// B waits for the lock, as a standby does.
+	lB, err := nodeB.LockWith("core/lock", "node-b")
+	if err != nil {
+		t.Fatalf("LockWith failed: %v", err)
+	}
+	lockB := lB.(*ConsulLock)
+
+	stopB := make(chan struct{})
+	defer close(stopB)
+	acquired := make(chan error, 1)
+	go func() {
+		leaderCh, err := lockB.Lock(stopB)
+		if err == nil && leaderCh == nil {
+			err = fmt.Errorf("acquisition was interrupted before node B became active")
+		}
+		acquired <- err
+	}()
+
+	// A's session lapses. Consul releases the key, and B's pending
+	// acquisition wins it.
+	_, sessionA := lockA.Info()
+	if _, err := nodeA.client.Session().Destroy(sessionA, nil); err != nil {
+		t.Fatalf("failed to invalidate node A's session: %v", err)
+	}
+
+	select {
+	case err := <-acquired:
+		if err != nil {
+			t.Fatalf("node B failed to take over: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("timed out waiting for node B to take over the lock")
+	}
+
+	if err := nodeB.RegisterActiveNodeLock(lockB); err != nil {
+		t.Fatalf("node B failed to register its lock: %v", err)
+	}
+
+	// B genuinely holds it.
+	keyB, sessionB := lockB.Info()
+	pair, _, err := nodeB.kv.Get(keyB, nil)
+	if err != nil || pair == nil {
+		t.Fatalf("failed to read the lock key: pair=%v err=%v", pair, err)
+	}
+	if pair.Session != sessionB {
+		t.Fatalf("expected node B to hold the lock with %q, Consul reports %q", sessionB, pair.Session)
+	}
+
+	ctx := context.Background()
+
+	// The successor writes normally.
+	if err := nodeB.Put(ctx, &physical.Entry{Key: "shared/key", Value: []byte("from-b")}); err != nil {
+		t.Fatalf("the new active node should be able to write: %v", err)
+	}
+
+	// Pin the path under test: node A still believes it holds the lock, so
+	// the next operation carries a real session check to Consul rather than
+	// stopping at the local guard. The first refused operation is the only
+	// one that reaches Consul -- refusing it steps the node down, which
+	// clears the session -- so the destructive verb goes first.
+	if _, current := lockA.Info(); current != sessionA {
+		t.Fatalf("node A should still believe it holds the lock with %q, reports %q", sessionA, current)
+	}
+
+	if err := nodeA.Delete(ctx, "shared/key"); !errors.Is(err, ErrLostActiveLock) {
+		t.Fatalf("the former leader's delete was not refused by consul: %v", err)
+	}
+
+	// Now stepped down, so this one is refused locally. Both routes matter:
+	// a demoted node must not write whether or not it has noticed yet.
+	if _, current := lockA.Info(); current != "" {
+		t.Fatalf("expected node A to have stepped down, still holds %q", current)
+	}
+	err = nodeA.Put(ctx, &physical.Entry{Key: "shared/key", Value: []byte("from-a-after-takeover")})
+	if !errors.Is(err, ErrLostActiveLock) {
+		t.Fatalf("the former leader's write was not refused: %v", err)
+	}
+
+	// And the successor's value is what is actually in storage: the former
+	// leader neither overwrote nor removed it.
+	got, err := nodeB.Get(ctx, "shared/key")
+	if err != nil {
+		t.Fatalf("failed to read back: %v", err)
+	}
+	if got == nil {
+		t.Fatal("the former leader's delete removed the successor's write")
+	}
+	if string(got.Value) != "from-b" {
+		t.Fatalf("storage holds %q: the former leader overwrote the active node's data", got.Value)
+	}
+
+	// Losing the lock must not be terminal. A node fenced out and left fenced
+	// forever is an availability failure as total as the corruption this
+	// guards against, and nothing else in the suite would notice it.
+	if err := lockB.Unlock(); err != nil {
+		t.Fatalf("node B failed to release the lock: %v", err)
+	}
+
+	lA2, err := nodeA.LockWith("core/lock", "node-a-again")
+	if err != nil {
+		t.Fatalf("LockWith failed: %v", err)
+	}
+	lockA2 := lA2.(*ConsulLock)
+	stopA2 := make(chan struct{})
+	defer close(stopA2)
+
+	leaderChA2, err := lockA2.Lock(stopA2)
+	if err != nil {
+		t.Fatalf("node A failed to re-acquire the lock: %v", err)
+	}
+	if leaderChA2 == nil {
+		t.Fatal("node A's re-acquisition was interrupted")
+	}
+	defer func() { _ = lockA2.Unlock() }()
+
+	if err := nodeA.RegisterActiveNodeLock(lockA2); err != nil {
+		t.Fatalf("node A failed to register its new lock: %v", err)
+	}
+
+	// Fenced against the new session, not the dead one.
+	_, sessionA2 := lockA2.Info()
+	if sessionA2 == "" || sessionA2 == sessionA {
+		t.Fatalf("expected a fresh session on re-acquisition, got %q (original was %q)", sessionA2, sessionA)
+	}
+	ops, fencedWith, err := nodeA.fencingOps(ctx)
+	if err != nil {
+		t.Fatalf("fencingOps failed after re-acquisition: %v", err)
+	}
+	if len(ops) != 1 || fencedWith != sessionA2 {
+		t.Fatalf("writes should now be fenced against %q, got %q from %d ops", sessionA2, fencedWith, len(ops))
+	}
+
+	if err := nodeA.Put(ctx, &physical.Entry{Key: "shared/key", Value: []byte("from-a-again")}); err != nil {
+		t.Fatalf("node A should be able to write again once it regains the lock: %v", err)
+	}
+	if got, err := nodeA.Get(ctx, "shared/key"); err != nil || got == nil || string(got.Value) != "from-a-again" {
+		t.Fatalf("re-acquired node's write did not land: entry=%v err=%v", got, err)
+	}
+}
+
+// TestConsulBackend_Fencing_StepDownGuards covers which sessions a step-down
+// will and will not act on.
+//
+// A fenced write can fail slowly enough that this node has since re-acquired
+// the lock under a new session. Stepping down on the old session's behalf
+// would give up leadership the node legitimately holds, so the session is
+// re-read and compared first. Both cases use a genuinely held lock: a
+// hand-built one is not enough, because Unlock returns early when no lock was
+// ever acquired and would leave the asserted fields untouched no matter what
+// the guard did.
+func TestConsulBackend_Fencing_StepDownGuards(t *testing.T) {
+	t.Run("no registered lock", func(t *testing.T) {
+		backend := &ConsulBackend{logger: hclog.NewNullLogger(), path: "test/"}
+		// Nothing to release, and nothing to panic on.
+		backend.stepDown("some-session")
+	})
+
+	t.Run("a superseded session is ignored", func(t *testing.T) {
+		backend := newFencingBackend(t, fmt.Sprintf("test/openbao/fencing-guard-stale-%d/", time.Now().UnixNano()))
+		lock, release := acquireActiveLock(t, backend, "core/lock", "node-a")
+		defer release()
+
+		key, session := lock.Info()
+		backend.stepDown("a-session-this-node-no-longer-uses")
+
+		if _, current := lock.Info(); current != session {
+			t.Errorf("a step-down for a superseded session released the current lock: session went from %q to %q", session, current)
+		}
+		// And Consul must still record the node as the holder.
+		pair, _, err := backend.kv.Get(key, nil)
+		if err != nil || pair == nil {
+			t.Fatalf("failed to read the lock key: pair=%v err=%v", pair, err)
+		}
+		if pair.Session != session {
+			t.Errorf("consul no longer records the lock as held by %q, it holds %q", session, pair.Session)
+		}
+	})
+
+	t.Run("the current session steps down", func(t *testing.T) {
+		backend := newFencingBackend(t, fmt.Sprintf("test/openbao/fencing-guard-current-%d/", time.Now().UnixNano()))
+		lock, release := acquireActiveLock(t, backend, "core/lock", "node-a")
+		defer release()
+
+		key, session := lock.Info()
+		backend.stepDown(session)
+
+		if _, current := lock.Info(); current != "" {
+			t.Errorf("expected the lock to be released, still holds %q", current)
+		}
+		pair, _, err := backend.kv.Get(key, nil)
+		if err != nil {
+			t.Fatalf("failed to read the lock key: %v", err)
+		}
+		if pair != nil && pair.Session != "" {
+			t.Errorf("consul still records the key as held by %q after stepping down", pair.Session)
+		}
+	})
+}
+
+// TestConsulBackend_MapWriteError covers the size mapping, so an oversized
+// value is reported as such rather than as an opaque failure, and is not
+// retried. Needs no Consul.
+func TestConsulBackend_MapWriteError(t *testing.T) {
+	backend := &ConsulBackend{logger: hclog.NewNullLogger()}
+
+	cases := []struct {
+		name      string
+		err       error
+		wantMap   bool
+		wantRetry bool
+	}{
+		{name: "nil stays nil", err: nil},
+		{
+			name:    "consul size rejection",
+			err:     errors.New("Value exceeds 524288 byte limit: value is too large"),
+			wantMap: true,
+		},
+		{
+			name:    "transaction size rejection",
+			err:     errors.New("Request body(600000 bytes) too large, max size: 524288 bytes"),
+			wantMap: true,
+		},
+		{
+			name:      "an unrelated failure is untouched and still retryable",
+			err:       errors.New("connection refused"),
+			wantRetry: true,
+		},
+		{
+			// Deliberately terminal: a demoted node must stop writing at
+			// once rather than burn the retry budget.
+			name: "a lost lock is terminal",
+			err:  fmt.Errorf("write: %w", ErrLostActiveLock),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mapWriteError(tc.err)
+			if tc.err == nil {
+				if got != nil {
+					t.Fatalf("expected nil, got %v", got)
+				}
+				return
+			}
+			if mapped := strings.Contains(got.Error(), physical.ErrValueTooLarge); mapped != tc.wantMap {
+				t.Errorf("expected mapped=%v, got %q", tc.wantMap, got)
+			}
+			// The original text has to survive, or the cause is lost.
+			if !strings.Contains(got.Error(), tc.err.Error()) {
+				t.Errorf("original error text lost: %q", got)
+			}
+			if retry := backend.isRetryableError(got); retry != tc.wantRetry {
+				t.Errorf("expected retryable=%v for %q", tc.wantRetry, got)
+			}
+		})
+	}
+}
+
+// TestConsulBackend_Fencing_ConcurrentWritesDuringTakeover runs many writes in
+// parallel across the moment the lock is lost.
+//
+// The step-down happens on whichever write notices first, while others are
+// still in flight, so this is where a race or a double-release would show. The
+// property asserted is that no write is silently accepted after the lock is
+// gone: each either committed before the loss or was refused.
+func TestConsulBackend_Fencing_ConcurrentWritesDuringTakeover(t *testing.T) {
+	backend := newFencingBackend(t, fmt.Sprintf("test/openbao/fencing-concurrent-%d/", time.Now().UnixNano()))
+	ctx := context.Background()
+
+	lock, release := acquireActiveLock(t, backend, "core/lock", "node-a")
+	defer release()
+
+	const writers = 16
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	results := make([]error, writers)
+
+	for i := range writers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i] = backend.Put(ctx, &physical.Entry{
+				Key:   fmt.Sprintf("concurrent/key-%02d", i),
+				Value: []byte("v"),
+			})
+		}(i)
+	}
+
+	// Pull the lock out from under them all at once.
+	_, session := lock.Info()
+	close(start)
+	if _, err := backend.client.Session().Destroy(session, nil); err != nil {
+		t.Fatalf("failed to invalidate the session: %v", err)
+	}
+	wg.Wait()
+
+	// Every write either landed while the lock was still held, or was
+	// refused. Anything else means a write slipped through unfenced.
+	for i, err := range results {
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, ErrLostActiveLock) {
+			t.Errorf("writer %d failed for an unexpected reason: %v", i, err)
+		}
+	}
+
+	// The step-down only happens on a write that was actually fenced, and the
+	// race admits an interleaving where all 16 commit before the session is
+	// destroyed. One further write makes the outcome deterministic rather
+	// than asserting a property the setup does not guarantee.
+	if err := backend.Put(ctx, &physical.Entry{Key: "concurrent/after", Value: []byte("v")}); !errors.Is(err, ErrLostActiveLock) {
+		t.Fatalf("a write after the session was destroyed must be refused, got: %v", err)
+	}
+	if _, remaining := lock.Info(); remaining != "" {
+		t.Errorf("expected the lock to have been released after losing the session, still holds %q", remaining)
+	}
+
+	// And storage must agree with what the writes reported.
+	for i, err := range results {
+		key := fmt.Sprintf("concurrent/key-%02d", i)
+		got, getErr := backend.Get(ctx, key)
+		if getErr != nil {
+			t.Fatalf("failed to read back %s: %v", key, getErr)
+		}
+		if err == nil && got == nil {
+			t.Errorf("writer %d reported success but %s is absent", i, key)
+		}
+		if err != nil && got != nil {
+			t.Errorf("writer %d was refused but %s landed anyway", i, key)
+		}
 	}
 }
