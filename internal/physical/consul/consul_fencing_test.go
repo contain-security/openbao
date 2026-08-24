@@ -599,12 +599,13 @@ func TestConsulBackend_Fencing_TakeoverRefusesFormerLeaderWrites(t *testing.T) {
 		t.Fatal("timed out waiting for node B to take over the lock")
 	}
 
-	// Registered as early as B could be holding a session at all, so that a
-	// failure anywhere below still frees it rather than leaving it renewing
-	// and holding the key for the rest of the run. Releasing an unacquired
-	// lock is a no-op, and once the explicit release further down has run
-	// this becomes one, so it neither masks nor duplicates that call --
-	// which is what still asserts a release succeeds.
+	// Registered here because this is the first point where nothing else
+	// would free B's session: an acquisition that fails or is interrupted
+	// above is already cleaned up by abandonSession, whereas from here on
+	// only an explicit release ends it, and a failure below would otherwise
+	// leave it renewing and holding the key for the rest of the run. Once
+	// the explicit release further down has run this becomes a no-op, so it
+	// neither masks nor duplicates the call that asserts a release succeeds.
 	defer func() { _ = lockB.Unlock() }()
 
 	if err := nodeB.RegisterActiveNodeLock(lockB); err != nil {
