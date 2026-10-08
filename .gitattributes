@@ -1,0 +1,10 @@
+# Consul fork: reduce merge friction when syncing from upstream OpenBao.
+#
+# go.sum is an unordered set of "module version hash" lines. Both upstream and
+# this fork legitimately add lines, so a union merge (keep both sides' hunks)
+# virtually eliminates go.sum conflicts. Any stray/duplicate line is cleaned up
+# by the mandatory `go mod tidy` run after every upstream merge.
+#
+# NOTE: do NOT union-merge go.mod — it is section-sensitive and a union merge can
+# produce an invalid file. go.mod conflicts are resolved by `go mod tidy`.
+go.sum merge=union
